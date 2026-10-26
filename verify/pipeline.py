@@ -16,10 +16,15 @@
    - ``REFUSED`` — any claim with failed evidence or
      ``INSUFFICIENT_EVIDENCE`` (including a malformed draft, a proposer
      or verifier failure, or no claims at all);
-   - ``CORRECTED`` — any claim ``CONTRADICTED`` with no refusal
-     trigger: with a governing rule the correction quotes the
-     governing passage; without one it uses only the verifier's
-     reason and the source name, never the claim's own quote.
+   - ``SUPERSEDED`` — a claim faithful to its own source
+     (``SUPPORTED`` against that source) but contradicted only by a
+     governing rule that supersedes that source: the claim verdict
+     and the decision are ``SUPERSEDED``, not
+     ``CONTRADICTED``/``CORRECTED``;
+   - ``CORRECTED`` — any claim ``CONTRADICTED`` by its own cited
+     source with no refusal trigger: the correction uses only the
+     verifier's reason and the source name, never the claim's own
+     quote.
 
 Fail closed: anything not proven ``SUPPORTED`` is never shown as
 verified, and a ``REFUSED`` result carries no answer text.
@@ -48,6 +53,7 @@ except ImportError:  # run as top-level modules (cd verify; unittest)
 VERIFIED = "VERIFIED"
 REFUSED = "REFUSED"
 CORRECTED = "CORRECTED"
+SUPERSEDED = "SUPERSEDED"
 
 _PROPOSER_PROMPT = (
     "Draft an answer to the question using only the source passages "
@@ -270,7 +276,9 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
 
     has_refusal = False
     has_contradicted = False
+    has_superseded = False
     corrections = []
+    superseded_messages = []
     for item in claims:
         entry = {"claim": item["claim"],
                  "source_file": item["source_file"],
@@ -305,12 +313,17 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
         governing_contradicted = False
         governing_failed = False
         governing_supported = False
+        governing_superseded = False
         for rule in governing_rules:
             gov_evidence = check_evidence(
                 rule["source_file"], rule["quote"], raw_dir=raw_dir)
             entry["governing_evidence"] = gov_evidence
             entry["governing_source"] = rule["source_file"]
             entry["governing_quote"] = rule["quote"]
+            entry["governing_title"] = governing_title(
+                rule["source_file"])
+            entry["governing_effective_date"] = rule.get(
+                "effective_date")
             if not (gov_evidence["exists"] and gov_evidence["found"]):
                 entry["reason"] = (
                     "Governing evidence check failed for %s "
@@ -325,18 +338,35 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 item["claim"], rule["quote"], gov_text)
             entry["governing_verdict"] = gov_result["verdict"]
             if gov_result["verdict"] == CONTRADICTED:
-                governing_contradicted = True
-                entry["verdict"] = CONTRADICTED
-                entry["reason"] = gov_result["reason"]
-                has_contradicted = True
-                corrections.append(
-                    "Claim %r is contradicted. %s Governing source "
-                    "%s (%s) supersedes %s on %s and actually says: %r"
-                    % (item["claim"], gov_result["reason"],
-                       rule["source_file"],
-                       governing_title(rule["source_file"]),
-                       item["source_file"], rule["topic"],
-                       rule["quote"]))
+                if result["verdict"] == SUPPORTED:
+                    # Faithful to its own source; only the governing
+                    # rule catches it: SUPERSEDED, not CONTRADICTED.
+                    governing_superseded = True
+                    entry["verdict"] = SUPERSEDED
+                    entry["reason"] = gov_result["reason"]
+                    has_superseded = True
+                    detail = str(gov_result["reason"]).strip()
+                    detail = detail.rstrip(".")
+                    superseded_messages.append(
+                        "%s says %s, but %s (effective %s) caps/sets "
+                        "%s. Current rule: %s."
+                        % (item["source_file"], item["claim"],
+                           governing_title(rule["source_file"]),
+                           rule.get("effective_date", ""),
+                           detail, rule["quote"]))
+                else:
+                    governing_contradicted = True
+                    entry["verdict"] = CONTRADICTED
+                    entry["reason"] = gov_result["reason"]
+                    has_contradicted = True
+                    corrections.append(
+                        "Claim %r is contradicted. %s Governing source "
+                        "%s (%s) supersedes %s on %s and actually says: %r"
+                        % (item["claim"], gov_result["reason"],
+                           rule["source_file"],
+                           governing_title(rule["source_file"]),
+                           item["source_file"], rule["topic"],
+                           rule["quote"]))
                 break
             elif gov_result["verdict"] == SUPPORTED:
                 governing_supported = True
@@ -350,7 +380,7 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 break
         if governing_rules:
             if not (governing_supported or governing_contradicted
-                    or governing_failed):
+                    or governing_failed or governing_superseded):
                 has_refusal = True
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
@@ -367,6 +397,11 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
 
     if has_refusal:
         trace["decision"] = REFUSED
+    elif has_superseded:
+        trace["decision"] = SUPERSEDED
+        trace["correction"] = " ".join(
+            superseded_messages + corrections)
+        trace["final_answer"] = trace["correction"]
     elif has_contradicted:
         trace["decision"] = CORRECTED
         trace["correction"] = " ".join(corrections)

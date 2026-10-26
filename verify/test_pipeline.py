@@ -19,15 +19,15 @@ from unittest import mock
 
 try:
     from verify.evidence import check_evidence, extract_text
-    from verify.pipeline import (CORRECTED, REFUSED, VERIFIED, answer,
-                                 make_model_proposer, retrieve)
+    from verify.pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED,
+                                 answer, make_model_proposer, retrieve)
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend,
                                  verify_claim)
     from verify.verifier import _PROMPT, _context_window
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
-    from pipeline import (CORRECTED, REFUSED, VERIFIED, answer,
+    from pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED, answer,
                           make_model_proposer, retrieve)
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend,
@@ -307,10 +307,10 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertFalse(trace["claims"][0]["evidence"]["found"])
         self.assertIsNone(trace["claims"][0]["verdict"])
 
-    def test_c_contradicted_ped_48_is_corrected(self):
+    def test_c_superseded_ped_48_is_superseded(self):
         # The fake supports the claim against the Arogya quote and
         # contradicts it only against the governing quote: the catch
-        # must come from pipeline authority precedence, not the mock.
+        # comes from authority precedence, so SUPERSEDED.
         def backend(claim, quote, source_text):
             if quote == PED_QUOTE:
                 return json.dumps({
@@ -326,24 +326,49 @@ class TestPipelineScenarios(unittest.TestCase):
         trace = answer(
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
-        self.assertEqual(trace["decision"], CORRECTED)
-        self.assertEqual(trace["claims"][0]["verdict"], CONTRADICTED)
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        self.assertNotEqual(trace["decision"], CORRECTED)
+        self.assertEqual(trace["claims"][0]["verdict"], SUPERSEDED)
+        self.assertNotEqual(trace["claims"][0]["verdict"], CONTRADICTED)
         self.assertTrue(trace["claims"][0]["evidence"]["found"])
         blob = json.dumps(trace)
         self.assertIn("36 months", blob)
-        self.assertIn("supersede", blob)
-        self.assertIn("48 months", trace["correction"])
-        # Correction quotes the GOVERNING passage and names the
-        # governing source; never the claim's own quote as the truth.
-        self.assertIn(PED_QUOTE, trace["correction"])
-        self.assertIn(PRODUCTS, trace["correction"])
-        self.assertNotIn(AROGYA_48_QUOTE, trace["correction"])
+        self.assertIn("48 months", trace["final_answer"])
+        # Message: "<source> says X, but <governing title>
+        # (effective <date>) caps/sets Y. Current rule: <quote>."
+        msg = trace["final_answer"]
+        self.assertEqual(trace["correction"], msg)
+        self.assertIn(AROGYA + " says PED waiting period is 48 months",
+                      msg)
+        self.assertIn(
+            "IRDAI (Insurance Products) Regulations, 2024, "
+            "Schedule III, Regulation 7 (effective 2024-03-22)", msg)
+        self.assertIn("caps/sets", msg)
+        self.assertIn("Current rule: " + PED_QUOTE, msg)
+        self.assertNotIn(AROGYA_48_QUOTE, msg)
         self.assertEqual(
             trace["claims"][0]["governing_source"], PRODUCTS)
         self.assertEqual(
             trace["claims"][0]["governing_verdict"], CONTRADICTED)
         self.assertTrue(
             trace["claims"][0]["governing_evidence"]["found"])
+
+    def test_c_own_source_contradiction_stays_corrected(self):
+        # Both the cited source and the governing passage contradict
+        # the claim: not faithful to its own source, so CORRECTED.
+        def backend(claim, quote, source_text):
+            return json.dumps({
+                "verdict": CONTRADICTED,
+                "reason": "The passage does not say 48 months."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft), verifier=backend)
+        self.assertEqual(trace["decision"], CORRECTED)
+        self.assertEqual(trace["claims"][0]["verdict"], CONTRADICTED)
 
     def test_g_governing_insufficient_is_refused(self):
         # Arogya quote SUPPORTED, governing INSUFFICIENT_EVIDENCE:
