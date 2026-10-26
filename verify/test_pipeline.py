@@ -24,7 +24,7 @@ try:
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend,
                                  verify_claim)
-    from verify.verifier import _PROMPT
+    from verify.verifier import _PROMPT, _context_window
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
     from pipeline import (CORRECTED, REFUSED, VERIFIED, answer,
@@ -32,7 +32,7 @@ except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend,
                           verify_claim)
-    from verifier import _PROMPT
+    from verifier import _PROMPT, _context_window
 
 PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
 AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
@@ -231,6 +231,40 @@ class TestGroundedProposer(unittest.TestCase):
         self.assertIn("quote only", prompt.lower())
         for passage in retrieve("What is the PED waiting period?"):
             self.assertIn(passage["quote"], prompt)
+
+
+class TestContextWindow(unittest.TestCase):
+    def test_window_centres_on_quote_past_20000(self):
+        source = "A" * 25000 + PED_QUOTE + "B" * 5000
+        self.assertGreater(source.find(PED_QUOTE), 20000)
+        windowed = _context_window(source, PED_QUOTE)
+        self.assertIn(PED_QUOTE, windowed)
+        self.assertLessEqual(len(windowed), 4000)
+        # Context around the quote, not just the document start.
+        self.assertFalse(windowed.startswith("A" * 4000))
+
+    def test_window_falls_back_to_start_if_not_found(self):
+        source = "X" * 10000
+        self.assertEqual(
+            _context_window(source, "no such quote"), source[:4000])
+        short = "short text"
+        self.assertEqual(_context_window(short, PED_QUOTE), short)
+
+    def test_real_backend_sees_quote_context_past_20000(self):
+        captured = {}
+        source = "A" * 25000 + PED_QUOTE + "B" * 5000
+        env = {"META_API_KEY": "test-key", "VERIFIER_MODEL": "model-x",
+               "META_API_BASE_URL": "https://example.invalid"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            backend("The PED cap is 36 months.", PED_QUOTE, source)
+        prompt = captured["json"]["messages"][0]["content"]
+        self.assertIn(PED_QUOTE, prompt)
+        # Windowed source is ~4000 chars, far below the old 20000 cap
+        # plus prompt overhead would still miss a quote at 25000.
+        self.assertLess(len(prompt), 20000)
 
 
 class TestPipelineScenarios(unittest.TestCase):

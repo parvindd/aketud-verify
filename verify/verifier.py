@@ -41,6 +41,50 @@ _PROMPT = (
 )
 
 
+def _context_window(source_text, quote, window=4000):
+    """Return a ``window``-char slice of ``source_text`` around ``quote``.
+
+    Falls back to the start of the text only if the quote is not
+    found. Matching tries an exact search first, then a
+    whitespace-insensitive search (PDF extraction drops spaces).
+    """
+    text = str(source_text)
+    if len(text) <= window:
+        return text
+    pos = -1
+    qlen = 0
+    if quote:
+        pos = text.find(str(quote))
+        qlen = len(str(quote))
+    if pos < 0 and quote:
+        # Whitespace-insensitive search with an index map back to
+        # the original text.
+        squashed_chars = []
+        index_map = []
+        for i, ch in enumerate(text):
+            if not ch.isspace():
+                squashed_chars.append(ch.lower())
+                index_map.append(i)
+        squashed = "".join(squashed_chars)
+        needle = "".join(
+            ch.lower() for ch in str(quote) if not ch.isspace())
+        spos = squashed.find(needle) if needle else -1
+        if spos >= 0:
+            pos = index_map[spos]
+            end_idx = spos + len(needle) - 1
+            qlen = index_map[end_idx] - pos + 1 if end_idx < len(
+                index_map) else qlen
+    if pos < 0:
+        return text[:window]
+    center = pos + qlen // 2
+    start = max(0, min(center - window // 2, len(text) - window))
+    return text[start:start + window]
+
+
+# Alias for discoverability.
+context_window = _context_window
+
+
 def _insufficient(reason):
     return {"verdict": INSUFFICIENT_EVIDENCE, "reason": reason}
 
@@ -129,7 +173,8 @@ def make_model_backend(model=None, *, timeout=60):
         import requests  # allowed dependency; imported lazily
 
         prompt = _PROMPT.format(
-            claim=claim, quote=quote, source_text=str(source_text)[:20000])
+            claim=claim, quote=quote,
+            source_text=_context_window(source_text, quote))
         resp = requests.post(
             base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": "Bearer " + api_key,
