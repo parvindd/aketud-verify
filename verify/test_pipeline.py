@@ -19,14 +19,16 @@ from unittest import mock
 
 try:
     from verify.evidence import check_evidence, extract_text
-    from verify.pipeline import CORRECTED, REFUSED, VERIFIED, answer
+    from verify.pipeline import (CORRECTED, REFUSED, VERIFIED, answer,
+                                 make_model_proposer, retrieve)
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend,
                                  verify_claim)
     from verify.verifier import _PROMPT
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
-    from pipeline import CORRECTED, REFUSED, VERIFIED, answer
+    from pipeline import (CORRECTED, REFUSED, VERIFIED, answer,
+                          make_model_proposer, retrieve)
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend,
                           verify_claim)
@@ -188,6 +190,47 @@ class TestAuthority(unittest.TestCase):
         rules = governing_for(AROGYA, text="PED waiting period")
         self.assertEqual([r["source_file"] for r in rules], [PRODUCTS])
         self.assertEqual(governing_for(PRODUCTS), [])
+
+
+class TestGroundedProposer(unittest.TestCase):
+    def test_retrieve_returns_source_passages(self):
+        passages = retrieve("What is the PED waiting period?")
+        self.assertTrue(passages)
+        for passage in passages:
+            self.assertIn("source_file", passage)
+            self.assertIn("quote", passage)
+            self.assertTrue(passage["quote"].strip())
+        quotes = [p["quote"] for p in passages]
+        self.assertTrue(any("36 months" in q for q in quotes))
+        # Authority passage is among the candidates.
+        self.assertTrue(any(
+            p["source_file"] == PRODUCTS and PED_QUOTE in p["quote"]
+            for p in passages))
+
+    def test_retrieve_matches_other_ask_topics(self):
+        passages = retrieve(
+            "After how many months can a claim not be contested "
+            "except for established fraud?")
+        self.assertTrue(any("60 months" in p["quote"]
+                            for p in passages))
+
+    def test_proposer_prompt_contains_passages(self):
+        captured = {}
+        env = {"META_API_KEY": "test-key",
+               "PROPOSER_MODEL": "proposer-x",
+               "META_API_BASE_URL": "https://example.invalid"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.dict(sys.modules, {"requests": _stub_requests(
+                    captured, content='{"claims": []}')}):
+            proposer = make_model_proposer()
+            proposer("What is the PED waiting period?", "en")
+        prompt = captured["json"]["messages"][0]["content"]
+        # Passages themselves, not just file names, are in the prompt.
+        self.assertIn(PED_QUOTE, prompt)
+        self.assertIn(PRODUCTS, prompt)
+        self.assertIn("quote only", prompt.lower())
+        for passage in retrieve("What is the PED waiting period?"):
+            self.assertIn(passage["quote"], prompt)
 
 
 class TestPipelineScenarios(unittest.TestCase):

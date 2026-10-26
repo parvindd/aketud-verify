@@ -30,12 +30,12 @@ import json
 import os
 
 try:
-    from verify.authority import governing_for, governing_title
+    from verify.authority import REGISTRY, governing_for, governing_title
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend)
 except ImportError:  # run as top-level modules (cd verify; unittest)
-    from authority import governing_for, governing_title
+    from authority import REGISTRY, governing_for, governing_title
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend)
@@ -45,12 +45,16 @@ REFUSED = "REFUSED"
 CORRECTED = "CORRECTED"
 
 _PROPOSER_PROMPT = (
-    "Draft an answer to the question using only the listed source "
-    "documents. Reply with strict JSON only: {{\"claims\": [{{\"claim\": "
+    "Draft an answer to the question using only the source passages "
+    "below. Quote only from these passages: every quote must be copied "
+    "verbatim from a passage below, with its source_file. Do not quote "
+    "from file names alone or from memory. Reply with strict JSON "
+    "only: {{\"claims\": [{{\"claim\": "
     "\"<one factual claim>\", \"source_file\": \"<file name>\", "
     "\"quote\": \"<verbatim passage from that file>\"}}]}}. Every "
-    "claim must carry a verbatim quote. If the sources do not support "
+    "claim must carry a verbatim quote. If the passages do not support "
     "an answer, return {{\"claims\": []}}.\n\n"
+    "Source passages:\n{passages}\n\n"
     "Language: {lang}\nQuestion: {question}"
 )
 
@@ -58,6 +62,102 @@ _SOURCES_HINT = (
     "irdai-insurance-products-regulations-2024.pdf, "
     "master-circular-health-2024.pdf, arogya-sanjeevani-hdfc-ergo.pdf"
 )
+
+_PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
+_MASTER = "master-circular-health-2024.pdf"
+_AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
+
+# Candidate passages copied from the quotes ask.py already uses,
+# plus authority entries (merged in retrieve()). Each entry:
+# (source_file, quote, keywords).
+_PASSAGES = (
+    (_PRODUCTS,
+     "Waiting period for pre-existing diseases disclosed by the persons "
+     "to be insured, shall be maximum up to 36 months of continuous "
+     "coverage under the Health Insurance policy. Insurers may endeavor "
+     "to have lesser pre-existing disease waiting period and specific "
+     "waiting period in the health insurance products. Provided that "
+     "the above waiting period norm of pre-existing disease shall not "
+     "be applicable for Overseas Travel Policies.",
+     ("ped", "pre-existing", "pre existing", "waiting period")),
+    (_MASTER,
+     "No policy and claim of health insurance shall be contestable on "
+     "any grounds of non-disclosure and/or misrepresentation except "
+     "for established fraud, after the completion of the Moratorium "
+     "Period, i.e. 60 months of continuous coverage",
+     ("moratorium", "contest", "fraud", "60 months")),
+    (_AROGYA,
+     "Expenses related to the treatment of any illness within 30 days "
+     "from the first policy commencement date shall be excluded except "
+     "claims arising due to an accident, provided the same are covered.",
+     ("30 days", "illness", "accident", "waiting period")),
+    (_AROGYA,
+     "Expenses for cosmetic or plastic surgery or any treatment to "
+     "change appearance unless for reconstruction following an "
+     "Accident, Burn(s) or Cancer or as part of medically necessary "
+     "treatment to remove a direct and immediate health risk to the "
+     "insured. For this to be considered a medical necessity, it must "
+     "be certified by the attending Medical Practitioner.",
+     ("cosmetic", "plastic surgery", "appearance")),
+    (_MASTER,
+     "CIS is to be provided with every policy \u2026 sub-limits (a "
+     "pre-defined limit above which insurance company will not pay)",
+     ("room", "sub-limit", "sub limit", "eligible limit", "cis")),
+    (_AROGYA,
+     "Expenses related to the treatment of a pre-existing Disease (PED) "
+     "and its direct complications shall be excluded until the expiry "
+     "of 48 months of continuous coverage after the date of inception "
+     "of the first policy with us.",
+     ("ped", "pre-existing", "pre existing", "waiting period")),
+)
+
+
+def _all_passages():
+    passages = [
+        {"source_file": src, "quote": quote, "_keywords": keywords}
+        for src, quote, keywords in _PASSAGES
+    ]
+    seen = {(p["source_file"], p["quote"]) for p in passages}
+    for rule in REGISTRY:
+        key = (rule["source_file"], rule["quote"])
+        if key in seen:
+            continue
+        seen.add(key)
+        passages.append({
+            "source_file": rule["source_file"], "quote": rule["quote"],
+            "topic": rule["topic"],
+            "_keywords": tuple(rule["topic"].lower().split()),
+        })
+    return passages
+
+
+def retrieve(question):
+    """Return candidate passages for ``question``.
+
+    Each passage is ``{"source_file": ..., "quote": ...}`` (authority
+    entries also carry ``topic``). Passages whose keywords appear in
+    the question come first; if none match, all passages are returned
+    so the proposer is always grounded in source text.
+    """
+    passages = _all_passages()
+    if question is None or not str(question).strip():
+        return [{k: v for k, v in p.items() if not k.startswith("_")}
+                for p in passages]
+    lowered = str(question).lower()
+    scored = []
+    for idx, passage in enumerate(passages):
+        score = sum(1 for k in passage["_keywords"] if k in lowered)
+        scored.append((-score, idx, passage))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    matched = [p for neg, _, p in scored if neg < 0]
+    chosen = matched if matched else passages
+    return [{k: v for k, v in p.items() if not k.startswith("_")}
+            for p in chosen]
+
+
+def _format_passages(passages):
+    return "\n".join(
+        "- [%s] %s" % (p["source_file"], p["quote"]) for p in passages)
 
 
 def make_model_proposer(model=None, *, timeout=60):
@@ -78,8 +178,10 @@ def make_model_proposer(model=None, *, timeout=60):
     def proposer(question, lang):
         import requests  # allowed dependency; imported lazily
 
+        passages = retrieve(question)
         prompt = (_PROPOSER_PROMPT + "\nSources: " + _SOURCES_HINT).format(
-            lang=lang, question=question)
+            lang=lang, question=question,
+            passages=_format_passages(passages))
         resp = requests.post(
             base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": "Bearer " + api_key,
