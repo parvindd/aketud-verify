@@ -1,0 +1,127 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-2e4de936",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXPatient"
+          ]
+        },
+        "name": [
+          {
+            "text": "Synthetic Person One"
+          }
+        ],
+        "identifier": [
+          {
+            "system": "https://abha.abdm.gov.in",
+            "value": "00-0000-0000-0001"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Coverage",
+        "id": "coverage-62e0ec28",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXCoverage"
+          ]
+        },
+        "status": "active",
+        "beneficiary": {
+          "reference": "Patient/patient-2e4de936"
+        },
+        "payor": [
+          {
+            "display": "Synthetic Insurer A"
+          }
+        ],
+        "subscriberId": "SYN-POL-001"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Claim",
+        "id": "claim-06fb467d",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXClaim"
+          ]
+        },
+        "status": "active",
+        "type": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/claim-type",
+              "code": "institutional"
+            }
+          ]
+        },
+        "use": "claim",
+        "patient": {
+          "reference": "Patient/patient-2e4de936"
+        },
+        "provider": {
+          "display": "Synthetic Hospital A"
+        },
+        "priority": {
+          "coding": [
+            {
+              "code": "normal"
+            }
+          ]
+        },
+        "insurance": [
+          {
+            "sequence": 1,
+            "focal": true,
+            "coverage": {
+              "reference": "Coverage/coverage-62e0ec28"
+            }
+          }
+        ],
+        "diagnosis": [
+          {
+            "sequence": 1,
+            "diagnosisCodeableConcept": {
+              "coding": [
+                {
+                  "system": "http://hl7.org/fhir/sid/icd-10",
+                  "code": "K35.8",
+                  "display": "Acute appendicitis"
+                }
+              ]
+            }
+          }
+        ],
+        "item": [
+          {
+            "sequence": 1,
+            "productOrService": {
+              "coding": [
+                {
+                  "code": "APPX",
+                  "display": "Appendicectomy package"
+                }
+              ]
+            },
+            "net": {
+              "value": 45000,
+              "currency": "INR"
+            }
+          }
+        ],
+        "total": {
+          "value": 45000,
+          "currency": "INR"
+        }
+      }
+    }
+  ]
+}

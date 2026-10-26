@@ -1,0 +1,127 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-26d4db77",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXPatient"
+          ]
+        },
+        "name": [
+          {
+            "text": "Synthetic Person Two"
+          }
+        ],
+        "identifier": [
+          {
+            "system": "https://abha.abdm.gov.in",
+            "value": "00-0000-0000-0002"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Coverage",
+        "id": "coverage-6c0525b6",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXCoverage"
+          ]
+        },
+        "status": "active",
+        "beneficiary": {
+          "reference": "Patient/patient-26d4db77"
+        },
+        "payor": [
+          {
+            "display": "Synthetic Insurer B"
+          }
+        ],
+        "subscriberId": "SYN-POL-002"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Claim",
+        "id": "claim-e8aa0367",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXClaim"
+          ]
+        },
+        "status": "active",
+        "type": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/claim-type",
+              "code": "institutional"
+            }
+          ]
+        },
+        "use": "preauthorization",
+        "patient": {
+          "reference": "Patient/patient-26d4db77"
+        },
+        "provider": {
+          "display": "Synthetic Hospital B"
+        },
+        "priority": {
+          "coding": [
+            {
+              "code": "normal"
+            }
+          ]
+        },
+        "insurance": [
+          {
+            "sequence": 1,
+            "focal": true,
+            "coverage": {
+              "reference": "Coverage/coverage-6c0525b6"
+            }
+          }
+        ],
+        "diagnosis": [
+          {
+            "sequence": 1,
+            "diagnosisCodeableConcept": {
+              "coding": [
+                {
+                  "system": "http://hl7.org/fhir/sid/icd-10",
+                  "code": "H25.9",
+                  "display": "Senile cataract"
+                }
+              ]
+            }
+          }
+        ],
+        "item": [
+          {
+            "sequence": 1,
+            "productOrService": {
+              "coding": [
+                {
+                  "code": "CAT",
+                  "display": "Cataract surgery"
+                }
+              ]
+            },
+            "net": {
+              "value": 28000,
+              "currency": "INR"
+            }
+          }
+        ],
+        "total": {
+          "value": 28000,
+          "currency": "INR"
+        }
+      }
+    }
+  ]
+}

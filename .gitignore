@@ -1,0 +1,11 @@
+# secrets — never commit
+.env
+*.env
+.modal.toml
+# environments
+.venv/
+__pycache__/
+.DS_Store
+# third-party source PDFs: fetched locally from SOURCES.csv, not redistributed
+health-corpus/raw/*.pdf
+.vscode/

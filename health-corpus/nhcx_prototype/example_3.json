@@ -1,0 +1,142 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-d9b28fb9",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXPatient"
+          ]
+        },
+        "name": [
+          {
+            "text": "Synthetic Person Three"
+          }
+        ],
+        "identifier": [
+          {
+            "system": "https://abha.abdm.gov.in",
+            "value": "00-0000-0000-0003"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Coverage",
+        "id": "coverage-832d62bd",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXCoverage"
+          ]
+        },
+        "status": "active",
+        "beneficiary": {
+          "reference": "Patient/patient-d9b28fb9"
+        },
+        "payor": [
+          {
+            "display": "Synthetic Insurer A"
+          }
+        ],
+        "subscriberId": "SYN-POL-003"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Claim",
+        "id": "claim-971709fd",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/NHCXClaim"
+          ]
+        },
+        "status": "active",
+        "type": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/claim-type",
+              "code": "institutional"
+            }
+          ]
+        },
+        "use": "claim",
+        "patient": {
+          "reference": "Patient/patient-d9b28fb9"
+        },
+        "provider": {
+          "display": "Synthetic Hospital C"
+        },
+        "priority": {
+          "coding": [
+            {
+              "code": "normal"
+            }
+          ]
+        },
+        "insurance": [
+          {
+            "sequence": 1,
+            "focal": true,
+            "coverage": {
+              "reference": "Coverage/coverage-832d62bd"
+            }
+          }
+        ],
+        "diagnosis": [
+          {
+            "sequence": 1,
+            "diagnosisCodeableConcept": {
+              "coding": [
+                {
+                  "system": "http://hl7.org/fhir/sid/icd-10",
+                  "code": "J18.9",
+                  "display": "Pneumonia"
+                }
+              ]
+            }
+          }
+        ],
+        "item": [
+          {
+            "sequence": 1,
+            "productOrService": {
+              "coding": [
+                {
+                  "code": "ROOM",
+                  "display": "Room charges"
+                }
+              ]
+            },
+            "net": {
+              "value": 12000,
+              "currency": "INR"
+            }
+          },
+          {
+            "sequence": 2,
+            "productOrService": {
+              "coding": [
+                {
+                  "code": "MED",
+                  "display": "Medicines"
+                }
+              ]
+            },
+            "net": {
+              "value": 8000,
+              "currency": "INR"
+            }
+          }
+        ],
+        "total": {
+          "value": 20000,
+          "currency": "INR"
+        }
+      }
+    }
+  ]
+}
