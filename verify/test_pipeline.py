@@ -739,6 +739,24 @@ class TestDemo(unittest.TestCase):
         self.assertIn("no claims", text)
         self.assertIn(REFUSAL_PREFIX, text)
 
+    def test_format_trace_stage2_readable_claim_lines(self):
+        demo = self._demo()
+        trace = self._verified_trace()
+        text = demo.format_trace(trace, color=False)
+        s2 = text.split("Stage 2")[1].split("Stage 3")[0]
+        # Each claim as a line: claim — source; raw JSON hidden.
+        self.assertIn(
+            "1. The PED waiting period is maximum up to 36 months "
+            "of continuous coverage. — "
+            "irdai-insurance-products-regulations-2024.pdf", s2)
+        self.assertNotIn('"claims"', s2)
+        self.assertNotIn('"source_file"', s2)
+        self.assertIn("--raw", s2)
+        raw_text = demo.format_trace(trace, color=False, raw=True)
+        s2_raw = raw_text.split("Stage 2")[1].split("Stage 3")[0]
+        self.assertIn('"claims"', s2_raw)
+        self.assertIn("1. The PED waiting period", s2_raw)
+
     def test_colour_only_when_requested(self):
         demo = self._demo()
         coloured = demo.format_trace(

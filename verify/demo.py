@@ -25,6 +25,7 @@ except ImportError:  # run as top-level module (cd verify)
     from pipeline import answer as _pipeline_answer
 
 _RESET = "\033[0m"
+_DIM = "\033[2m"
 _BOLD = "\033[1m"
 _CYAN = "\033[36m"
 _GREEN = "\033[32m"
@@ -111,8 +112,30 @@ def _large_decision(decision, colour):
     ]
 
 
-def format_trace(trace, *, color=False):
-    """Render ``trace`` (from :func:`verify.pipeline.answer`)."""
+def _draft_claims(trace):
+    claims = trace.get("claims") or []
+    if claims:
+        return claims
+    draft = trace.get("draft")
+    if isinstance(draft, str):
+        try:
+            draft = json.loads(draft)
+        except (ValueError, TypeError):
+            return []
+    if isinstance(draft, dict):
+        items = draft.get("claims")
+        if isinstance(items, list):
+            return [c for c in items if isinstance(c, dict)]
+    return []
+
+
+def format_trace(trace, *, color=False, raw=False):
+    """Render ``trace`` (from :func:`verify.pipeline.answer`).
+
+    Stage 2 lists each draft claim as ``claim — source``; the raw
+    draft JSON is shown only with ``raw=True`` (``--raw``), dimmed
+    when colour is on.
+    """
     lines = []
     stage = 0
 
@@ -124,12 +147,25 @@ def format_trace(trace, *, color=False):
     stage += 1
     _stage(lines, stage, "Muse Spark draft (proposer)", color)
     draft = trace.get("draft")
+    draft_claims = _draft_claims(trace)
     if draft is None:
         lines.append("(no draft)")
-    elif isinstance(draft, str):
-        lines.append(draft)
+    elif not draft_claims:
+        lines.append("(no claims in draft)")
     else:
-        lines.append(json.dumps(draft, indent=2, ensure_ascii=False))
+        for idx, claim in enumerate(draft_claims, 1):
+            text = claim.get("claim", claim.get("text", ""))
+            source = claim.get("source_file",
+                               claim.get("source", ""))
+            lines.append("%d. %s — %s" % (idx, text, source))
+    if draft is not None:
+        if raw:
+            raw_text = draft if isinstance(draft, str) else json.dumps(
+                draft, indent=2, ensure_ascii=False)
+            lines.append(_paint(_DIM, raw_text, color))
+        else:
+            lines.append(_paint(
+                _DIM, "(raw draft hidden — use --raw to show)", color))
     lines.append("")
 
     claims = trace.get("claims") or []
@@ -209,8 +245,10 @@ def main(argv=None, stream=None):
     """Run the demo for one question; return an exit code."""
     args = list(sys.argv[1:] if argv is None else argv)
     stream = stream if stream is not None else sys.stdout
+    raw = "--raw" in args
+    args = [a for a in args if a != "--raw"]
     if not args or not " ".join(args).strip():
-        print('Usage: python -m verify.demo "<question>"',
+        print('Usage: python -m verify.demo [--raw] "<question>"',
               file=sys.stderr)
         return 2
     question = " ".join(args).strip()
@@ -221,7 +259,7 @@ def main(argv=None, stream=None):
     except ImportError:
         from pipeline import answer
     trace = answer(question)
-    print(format_trace(trace, color=supports_color(stream)),
+    print(format_trace(trace, color=supports_color(stream), raw=raw),
           file=stream)
     return 0
 
