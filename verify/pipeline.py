@@ -17,7 +17,9 @@
      ``INSUFFICIENT_EVIDENCE`` (including a malformed draft, a proposer
      or verifier failure, or no claims at all);
    - ``CORRECTED`` — any claim ``CONTRADICTED`` with no refusal
-     trigger: the trace shows what the source actually says instead.
+     trigger: with a governing rule the correction quotes the
+     governing passage; without one it uses only the verifier's
+     reason and the source name, never the claim's own quote.
 
 Fail closed: anything not proven ``SUPPORTED`` is never shown as
 verified, and a ``REFUSED`` result carries no answer text.
@@ -352,10 +354,13 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 has_refusal = True
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
+            # No governing rule: do not present the claim's own
+            # quote as what the source says; use only the
+            # verifier's reason and the source name.
             corrections.append(
-                "Claim %r is contradicted. %s Source %s actually "
-                "says: %r" % (item["claim"], result["reason"],
-                              item["source_file"], item["quote"]))
+                "Claim %r is contradicted. %s Source: %s."
+                % (item["claim"], result["reason"],
+                   item["source_file"]))
         elif result["verdict"] != SUPPORTED:
             has_refusal = True
         trace["claims"].append(entry)

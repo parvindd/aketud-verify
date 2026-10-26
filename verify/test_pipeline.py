@@ -415,6 +415,26 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertEqual(
             trace["claims"][0]["governing_verdict"], SUPPORTED)
 
+    def test_h_contradicted_without_governing_uses_reason_only(self):
+        # No governing rule for PRODUCTS: the correction must not
+        # present the claim's own quote as what the source says.
+        reason = "The passage caps PED at 36 months, not 12."
+        draft = {"claims": [{
+            "claim": "PED waiting period is 12 months",
+            "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": CONTRADICTED, "reason": reason}))
+        self.assertEqual(trace["decision"], CORRECTED)
+        self.assertEqual(trace["claims"][0]["verdict"], CONTRADICTED)
+        self.assertIn(reason, trace["correction"])
+        self.assertIn(PRODUCTS, trace["correction"])
+        self.assertNotIn(PED_QUOTE, trace["correction"])
+        self.assertNotIn("actually says", trace["correction"])
+        self.assertEqual(trace["final_answer"], trace["correction"])
+
     def test_d_misleading_quote_is_not_verified(self):
         # Quote exists verbatim, but it does not support the claim:
         # the 36-month norm expressly does not apply to Overseas
