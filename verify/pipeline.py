@@ -30,10 +30,12 @@ import json
 import os
 
 try:
+    from verify.authority import governing_for, governing_title
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend)
 except ImportError:  # run as top-level modules (cd verify; unittest)
+    from authority import governing_for, governing_title
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend)
@@ -183,7 +185,48 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
         result = verifier.verify(item["claim"], item["quote"], source_text)
         entry["verdict"] = result["verdict"]
         entry["reason"] = result["reason"]
-        if result["verdict"] == CONTRADICTED:
+        # Authority precedence: a superseded source does not govern.
+        # Re-verify against the governing passage (evidence first).
+        governing_contradicted = False
+        governing_failed = False
+        for rule in governing_for(
+                item["source_file"],
+                text=item["claim"] + " " + str(question)):
+            gov_evidence = check_evidence(
+                rule["source_file"], rule["quote"], raw_dir=raw_dir)
+            entry["governing_evidence"] = gov_evidence
+            entry["governing_source"] = rule["source_file"]
+            entry["governing_quote"] = rule["quote"]
+            if not (gov_evidence["exists"] and gov_evidence["found"]):
+                entry["reason"] = (
+                    "Governing evidence check failed for %s "
+                    "(exists=%s, found=%s); claim not verified."
+                    % (rule["source_file"], gov_evidence["exists"],
+                       gov_evidence["found"]))
+                has_refusal = True
+                governing_failed = True
+                break
+            gov_text = extract_text(rule["source_file"], raw_dir=raw_dir)
+            gov_result = verifier.verify(
+                item["claim"], rule["quote"], gov_text)
+            entry["governing_verdict"] = gov_result["verdict"]
+            if gov_result["verdict"] == CONTRADICTED:
+                governing_contradicted = True
+                entry["verdict"] = CONTRADICTED
+                entry["reason"] = gov_result["reason"]
+                has_contradicted = True
+                corrections.append(
+                    "Claim %r is contradicted. %s Governing source "
+                    "%s (%s) supersedes %s on %s and actually says: %r"
+                    % (item["claim"], gov_result["reason"],
+                       rule["source_file"],
+                       governing_title(rule["source_file"]),
+                       item["source_file"], rule["topic"],
+                       rule["quote"]))
+                break
+        if governing_contradicted or governing_failed:
+            pass
+        elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
             corrections.append(
                 "Claim %r is contradicted. %s Source %s actually "

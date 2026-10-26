@@ -168,6 +168,28 @@ class TestPromptFormatting(unittest.TestCase):
         self.assertEqual(captured["json"]["model"], "model-x")
 
 
+class TestAuthority(unittest.TestCase):
+    def test_registry_first_entry_is_ped_governing_rule(self):
+        try:
+            from verify.authority import REGISTRY, governing_for
+        except ImportError:
+            from authority import REGISTRY, governing_for
+        self.assertTrue(REGISTRY)
+        first = REGISTRY[0]
+        for key in ("topic", "source_file", "quote", "issuer",
+                    "effective_date", "supersedes"):
+            self.assertIn(key, first)
+        self.assertEqual(first["source_file"], PRODUCTS)
+        self.assertEqual(first["quote"], PED_QUOTE)
+        self.assertIn(AROGYA, first["supersedes"])
+        self.assertIn("PED", first["topic"])
+        self.assertTrue(first["issuer"])
+        self.assertTrue(first["effective_date"])
+        rules = governing_for(AROGYA, text="PED waiting period")
+        self.assertEqual([r["source_file"] for r in rules], [PRODUCTS])
+        self.assertEqual(governing_for(PRODUCTS), [])
+
+
 class TestPipelineScenarios(unittest.TestCase):
     def test_a_supported_ped_cap_is_verified(self):
         draft = {"claims": [{
@@ -209,23 +231,42 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertIsNone(trace["claims"][0]["verdict"])
 
     def test_c_contradicted_ped_48_is_corrected(self):
+        # The fake supports the claim against the Arogya quote and
+        # contradicts it only against the governing quote: the catch
+        # must come from pipeline authority precedence, not the mock.
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": CONTRADICTED,
+                    "reason": "Governing passage caps PED at 36 months."})
+            return json.dumps({
+                "verdict": SUPPORTED,
+                "reason": "The Arogya quote states 48 months."})
+
         draft = {"claims": [{
             "claim": "PED waiting period is 48 months",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
         trace = answer(
             "What is the PED waiting period?",
-            proposer=fake_proposer(draft),
-            verifier=fake_backend(
-                {"verdict": CONTRADICTED, "reason": SUPERSEDING_REASON}))
+            proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], CORRECTED)
         self.assertEqual(trace["claims"][0]["verdict"], CONTRADICTED)
         self.assertTrue(trace["claims"][0]["evidence"]["found"])
         blob = json.dumps(trace)
-        # Trace names the superseding regulation and the true cap.
-        self.assertIn("Insurance Products) Regulations, 2024", blob)
         self.assertIn("36 months", blob)
         self.assertIn("supersede", blob)
         self.assertIn("48 months", trace["correction"])
+        # Correction quotes the GOVERNING passage and names the
+        # governing source; never the claim's own quote as the truth.
+        self.assertIn(PED_QUOTE, trace["correction"])
+        self.assertIn(PRODUCTS, trace["correction"])
+        self.assertNotIn(AROGYA_48_QUOTE, trace["correction"])
+        self.assertEqual(
+            trace["claims"][0]["governing_source"], PRODUCTS)
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"], CONTRADICTED)
+        self.assertTrue(
+            trace["claims"][0]["governing_evidence"]["found"])
 
     def test_d_misleading_quote_is_not_verified(self):
         # Quote exists verbatim, but it does not support the claim:
