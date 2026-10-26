@@ -20,9 +20,12 @@
      ``final_answer`` (never ``None``);
    - ``SUPERSEDED`` — a claim faithful to its own source
      (``SUPPORTED`` against that source) but contradicted only by a
-     governing rule that supersedes that source: the claim verdict
-     and the decision are ``SUPERSEDED``, not
-     ``CONTRADICTED``/``CORRECTED``;
+     governing rule that supersedes that source: the decision is
+     ``SUPERSEDED``, not ``CONTRADICTED``/``CORRECTED``. The trace
+     keeps the verifier's verdict on the cited source unchanged in
+     ``verdict``/``verifier_verdict`` and the governing verdict
+     separately in ``governing_verdict``; only the final decision
+     combines them;
    - ``CORRECTED`` — any claim ``CONTRADICTED`` by its own cited
      source with no refusal trigger: the correction uses only the
      verifier's reason and the source name, never the claim's own
@@ -337,7 +340,9 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
         entry = {"claim": item["claim"],
                  "source_file": item["source_file"],
                  "quote": item["quote"],
-                 "evidence": None, "verdict": None, "reason": None}
+                 "evidence": None, "verdict": None, "reason": None,
+                 "verifier_verdict": None, "verifier_reason": None,
+                 "governing_verdict": None, "governing_reason": None}
         evidence = check_evidence(item["source_file"], item["quote"],
                                   raw_dir=raw_dir)
         entry["evidence"] = evidence
@@ -353,8 +358,13 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             continue
         source_text = extract_text(item["source_file"], raw_dir=raw_dir)
         result = verifier.verify(item["claim"], item["quote"], source_text)
+        # Verifier verdict on the cited source: stored unchanged.
+        # Governing verdicts go in governing_verdict/governing_reason
+        # and are never written over this.
         entry["verdict"] = result["verdict"]
+        entry["verifier_verdict"] = result["verdict"]
         entry["reason"] = result["reason"]
+        entry["verifier_reason"] = result["reason"]
         # Authority precedence: a superseded source does not govern.
         # Re-verify against the governing passage (evidence first).
         # When a governing rule applies, the claim is VERIFIED only
@@ -380,7 +390,7 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             entry["governing_effective_date"] = rule.get(
                 "effective_date")
             if not (gov_evidence["exists"] and gov_evidence["found"]):
-                entry["reason"] = (
+                entry["governing_reason"] = (
                     "Governing evidence check failed for %s "
                     "(exists=%s, found=%s); claim not verified."
                     % (rule["source_file"], gov_evidence["exists"],
@@ -394,13 +404,13 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             gov_result = verifier.verify(
                 item["claim"], rule["quote"], gov_text)
             entry["governing_verdict"] = gov_result["verdict"]
+            entry["governing_reason"] = gov_result["reason"]
             if gov_result["verdict"] == CONTRADICTED:
                 if result["verdict"] == SUPPORTED:
                     # Faithful to its own source; only the governing
-                    # rule catches it: SUPERSEDED, not CONTRADICTED.
+                    # rule catches it: decision SUPERSEDED. The cited
+                    # verdict above stays SUPPORTED.
                     governing_superseded = True
-                    entry["verdict"] = SUPERSEDED
-                    entry["reason"] = gov_result["reason"]
                     has_superseded = True
                     detail = str(gov_result["reason"]).strip()
                     detail = detail.rstrip(".")
@@ -413,8 +423,6 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                            detail, rule["quote"]))
                 else:
                     governing_contradicted = True
-                    entry["verdict"] = CONTRADICTED
-                    entry["reason"] = gov_result["reason"]
                     has_contradicted = True
                     corrections.append(
                         "Claim %r is contradicted. %s Governing source "
@@ -427,11 +435,7 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 break
             elif gov_result["verdict"] == SUPPORTED:
                 governing_supported = True
-                entry["verdict"] = SUPPORTED
-                entry["reason"] = gov_result["reason"]
             else:
-                entry["verdict"] = gov_result["verdict"]
-                entry["reason"] = gov_result["reason"]
                 entry["refusal_reason"] = (
                     REFUSAL_GOVERNING_INSUFFICIENT)
                 _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)

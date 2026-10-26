@@ -153,40 +153,47 @@ def format_trace(trace, *, color=False):
     lines.append("")
 
     stage += 1
-    _stage(lines, stage, "Verifier verdict (per claim)", color)
+    _stage(lines, stage,
+           "Verifier verdict — cited source (per claim)", color)
     if not claims:
         lines.append("(no claims to verify)")
     for idx, claim in enumerate(claims, 1):
-        verdict = claim.get("verdict") or "(not verified)"
-        lines.append("Claim %d: %s — %s"
-                     % (idx, verdict, claim.get("reason") or ""))
+        verdict = (claim.get("verifier_verdict")
+                   or claim.get("verdict") or "(not verified)")
+        reason = claim.get("verifier_reason")
+        if reason is None:
+            reason = claim.get("reason") or ""
+        lines.append("Claim %d: %s — %s" % (idx, verdict, reason))
+        lines.append("  Cited source: %s"
+                     % claim.get("source_file", ""))
     lines.append("")
 
-    if any(c.get("governing_source") or c.get("governing_verdict")
-           for c in claims):
-        stage += 1
-        _stage(lines, stage,
-               "Governing check — authority precedence", color)
-        for idx, claim in enumerate(claims, 1):
-            if not (claim.get("governing_source")
-                    or claim.get("governing_verdict")):
-                continue
-            lines.append(
-                "Claim %d: governing source %s (%s, effective %s)"
-                % (idx, claim.get("governing_source", ""),
-                   claim.get("governing_title", ""),
-                   claim.get("governing_effective_date", "")))
-            gov_ev = claim.get("governing_evidence") or {}
-            gov_found = bool(gov_ev.get("exists") and gov_ev.get("found"))
-            lines.append("  Governing evidence: %s"
-                         % ("FOUND" if gov_found else "NOT FOUND"))
-            lines.append("  Governing verdict: %s"
-                         % (claim.get("governing_verdict")
-                            or "(none)"))
-            if claim.get("governing_quote"):
-                lines.append("  Governing quote: %s"
-                             % claim["governing_quote"])
-        lines.append("")
+    stage += 1
+    _stage(lines, stage,
+           "Governing check — authority precedence", color)
+    if not any(c.get("governing_source") or c.get("governing_verdict")
+               for c in claims):
+        lines.append("(no governing rule applies)")
+    for idx, claim in enumerate(claims, 1):
+        if not (claim.get("governing_source")
+                or claim.get("governing_verdict")):
+            continue
+        lines.append(
+            "Claim %d: governing source %s (%s, effective %s)"
+            % (idx, claim.get("governing_source", ""),
+               claim.get("governing_title", ""),
+               claim.get("governing_effective_date", "")))
+        gov_ev = claim.get("governing_evidence") or {}
+        gov_found = bool(gov_ev.get("exists") and gov_ev.get("found"))
+        lines.append("  Governing evidence: %s"
+                     % ("FOUND" if gov_found else "NOT FOUND"))
+        lines.append("  Governing verdict: %s — %s"
+                     % (claim.get("governing_verdict") or "(none)",
+                        claim.get("governing_reason") or ""))
+        if claim.get("governing_quote"):
+            lines.append("  Governing quote: %s"
+                         % claim["governing_quote"])
+    lines.append("")
 
     stage += 1
     _stage(lines, stage, "Final decision", color)

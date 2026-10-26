@@ -342,8 +342,12 @@ class TestPipelineScenarios(unittest.TestCase):
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], SUPERSEDED)
         self.assertNotEqual(trace["decision"], CORRECTED)
-        self.assertEqual(trace["claims"][0]["verdict"], SUPERSEDED)
-        self.assertNotEqual(trace["claims"][0]["verdict"], CONTRADICTED)
+        # Cited-source verdict stays SUPPORTED; only decision is
+        # SUPERSEDED (governing verdict kept separately).
+        self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        self.assertEqual(
+            trace["claims"][0]["verifier_verdict"], SUPPORTED)
+        self.assertNotEqual(trace["claims"][0]["verdict"], SUPERSEDED)
         self.assertTrue(trace["claims"][0]["evidence"]["found"])
         blob = json.dumps(trace)
         self.assertIn("36 months", blob)
@@ -410,7 +414,11 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertEqual(
             trace["claims"][0]["governing_verdict"],
             INSUFFICIENT_EVIDENCE)
-        self.assertNotEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        # Cited verdict unchanged (SUPPORTED); refusal comes from
+        # the governing verdict alone.
+        self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        self.assertEqual(
+            trace["claims"][0]["verifier_verdict"], SUPPORTED)
         self.assertEqual(
             trace["claims"][0]["governing_source"], PRODUCTS)
 
@@ -452,7 +460,12 @@ class TestPipelineScenarios(unittest.TestCase):
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], VERIFIED)
-        self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        # Cited verdict unchanged; governing SUPPORTED governs.
+        self.assertEqual(
+            trace["claims"][0]["verdict"], INSUFFICIENT_EVIDENCE)
+        self.assertEqual(
+            trace["claims"][0]["verifier_verdict"],
+            INSUFFICIENT_EVIDENCE)
         self.assertEqual(
             trace["claims"][0]["governing_verdict"], SUPPORTED)
 
@@ -692,6 +705,14 @@ class TestDemo(unittest.TestCase):
         self.assertIn("Governing check", text)
         self.assertIn("SUPERSEDED", text)
         self.assertIn("Current rule:", text)
+        # Stage 4 cited verdict, Stage 5 governing, Stage 6 decision.
+        s4 = text.split("Stage 4")[1].split("Stage 5")[0]
+        s5 = text.split("Stage 5")[1].split("Stage 6")[0]
+        s6 = text.split("Stage 6")[1]
+        self.assertIn("SUPPORTED", s4)
+        self.assertNotIn("SUPERSEDED", s4)
+        self.assertIn("CONTRADICTED", s5)
+        self.assertIn("SUPERSEDED", s6)
 
     def test_format_trace_refused_shows_reason_and_message(self):
         demo = self._demo()
