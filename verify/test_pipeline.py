@@ -10,11 +10,14 @@ deterministic evidence check runs against the real PDFs in
 same fixtures the baseline tests require.
 """
 import hashlib
+import io
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 try:
@@ -633,6 +636,120 @@ class TestRefusalReasons(unittest.TestCase):
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assert_refused(trace, REFUSAL_GOVERNING_INSUFFICIENT)
+
+
+class TestDemo(unittest.TestCase):
+    def _demo(self):
+        try:
+            import verify.demo as demo
+        except ImportError:
+            import demo
+        return demo
+
+    def _verified_trace(self):
+        draft = {"claims": [{
+            "claim": "The PED waiting period is maximum up to 36 months "
+                     "of continuous coverage.",
+            "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+        return answer(
+            "What is the maximum PED waiting period?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+
+    def test_format_trace_labels_every_stage(self):
+        demo = self._demo()
+        text = demo.format_trace(self._verified_trace(), color=False)
+        self.assertIn("Stage 1", text)
+        self.assertIn("Question", text)
+        self.assertIn("Muse Spark draft", text)
+        self.assertIn("Evidence check", text)
+        self.assertIn("FOUND", text)
+        self.assertIn(PRODUCTS, text)
+        self.assertIn("Verifier verdict", text)
+        self.assertIn("SUPPORTED", text)
+        self.assertIn("Final decision", text)
+        self.assertIn("VERIFIED", text)
+        self.assertNotIn("\033[", text)
+
+    def test_format_trace_shows_governing_and_superseded(self):
+        demo = self._demo()
+
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": CONTRADICTED,
+                    "reason": "Governing passage caps PED at 36 months."})
+            return json.dumps(
+                {"verdict": SUPPORTED, "reason": "Arogya says 48."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer("What is the PED waiting period?",
+                       proposer=fake_proposer(draft), verifier=backend)
+        text = demo.format_trace(trace, color=False)
+        self.assertIn("Governing check", text)
+        self.assertIn("SUPERSEDED", text)
+        self.assertIn("Current rule:", text)
+
+    def test_format_trace_refused_shows_reason_and_message(self):
+        demo = self._demo()
+        trace = answer(
+            "Anything?", proposer=fake_proposer({"claims": []}),
+            verifier=fake_backend({"verdict": SUPPORTED, "reason": "x"}))
+        text = demo.format_trace(trace, color=False)
+        self.assertIn("REFUSED", text)
+        self.assertIn("no claims", text)
+        self.assertIn(REFUSAL_PREFIX, text)
+
+    def test_colour_only_when_requested(self):
+        demo = self._demo()
+        coloured = demo.format_trace(
+            self._verified_trace(), color=True)
+        self.assertIn("\033[", coloured)
+        fake_tty = io.StringIO()
+        fake_tty.isatty = lambda: True
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(demo.supports_color(fake_tty))
+            self.assertFalse(demo.supports_color(io.StringIO()))
+
+    def test_load_env_reads_file_without_overwriting(self):
+        demo = self._demo()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "# comment\nDEMO_TEST_KEY=from-env-file\n"
+                "export DEMO_TEST_OTHER='quoted'\n",
+                encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                loaded = demo.load_env(env_file)
+                self.assertEqual(loaded["DEMO_TEST_KEY"],
+                                 "from-env-file")
+                self.assertEqual(os.environ["DEMO_TEST_OTHER"],
+                                 "quoted")
+            with mock.patch.dict(
+                    os.environ, {"DEMO_TEST_KEY": "real"}, clear=True):
+                demo.load_env(env_file)
+                self.assertEqual(os.environ["DEMO_TEST_KEY"], "real")
+
+    def test_main_prints_trace_and_usage(self):
+        demo = self._demo()
+        stream = io.StringIO()
+        trace = self._verified_trace()
+        try:
+            import verify.pipeline as pipeline_mod
+        except ImportError:
+            import pipeline as pipeline_mod
+        with mock.patch.object(pipeline_mod, "answer",
+                               return_value=trace):
+            self.assertEqual(
+                demo.main(["What is the PED waiting period?"],
+                          stream=stream), 0)
+        out = stream.getvalue()
+        self.assertIn("Muse Spark draft", out)
+        self.assertIn("VERIFIED", out)
+        self.assertEqual(demo.main([], stream=io.StringIO()), 2)
 
 
 if __name__ == "__main__":
