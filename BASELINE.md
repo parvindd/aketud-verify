@@ -78,3 +78,5 @@ Run on 26 Oct 2026, Python 3.10, with the three PDFs present. Requires
 
 Motor-photo prototype and its outputs, evaluation drafts, US corpus, planning
 and task notes, editor extensions, and all private product code.
+
+DEMO_QUESTIONS.md is unchanged from the original. Its references to 'the v2 set' and 'the corpus in this repo' mean material not carried over: the v2 evaluation set was excluded, and the PDFs are fetched from SOURCES.csv.
