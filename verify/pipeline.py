@@ -10,6 +10,9 @@
 4. a final decision:
 
    - ``VERIFIED`` — every claim ``SUPPORTED`` (and at least one claim);
+     when a governing rule applies, only a governing ``SUPPORTED``
+     counts — governing ``INSUFFICIENT_EVIDENCE`` is a refusal and
+     the superseded source's verdict is never used;
    - ``REFUSED`` — any claim with failed evidence or
      ``INSUFFICIENT_EVIDENCE`` (including a malformed draft, a proposer
      or verifier failure, or no claims at all);
@@ -289,11 +292,18 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
         entry["reason"] = result["reason"]
         # Authority precedence: a superseded source does not govern.
         # Re-verify against the governing passage (evidence first).
+        # When a governing rule applies, the claim is VERIFIED only
+        # if the governing verdict is SUPPORTED; governing
+        # INSUFFICIENT_EVIDENCE (including malformed/failed verifier
+        # output, which fails closed to INSUFFICIENT_EVIDENCE) is a
+        # refusal, and the superseded source's verdict is never used.
+        governing_rules = governing_for(
+            item["source_file"],
+            text=item["claim"] + " " + str(question))
         governing_contradicted = False
         governing_failed = False
-        for rule in governing_for(
-                item["source_file"],
-                text=item["claim"] + " " + str(question)):
+        governing_supported = False
+        for rule in governing_rules:
             gov_evidence = check_evidence(
                 rule["source_file"], rule["quote"], raw_dir=raw_dir)
             entry["governing_evidence"] = gov_evidence
@@ -326,8 +336,20 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                        item["source_file"], rule["topic"],
                        rule["quote"]))
                 break
-        if governing_contradicted or governing_failed:
-            pass
+            elif gov_result["verdict"] == SUPPORTED:
+                governing_supported = True
+                entry["verdict"] = SUPPORTED
+                entry["reason"] = gov_result["reason"]
+            else:
+                entry["verdict"] = gov_result["verdict"]
+                entry["reason"] = gov_result["reason"]
+                has_refusal = True
+                governing_failed = True
+                break
+        if governing_rules:
+            if not (governing_supported or governing_contradicted
+                    or governing_failed):
+                has_refusal = True
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
             corrections.append(

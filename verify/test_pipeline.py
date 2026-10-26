@@ -345,6 +345,76 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertTrue(
             trace["claims"][0]["governing_evidence"]["found"])
 
+    def test_g_governing_insufficient_is_refused(self):
+        # Arogya quote SUPPORTED, governing INSUFFICIENT_EVIDENCE:
+        # never fall back to the superseded verdict.
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": INSUFFICIENT_EVIDENCE,
+                    "reason": "Governing passage does not establish "
+                              "this claim."})
+            return json.dumps({
+                "verdict": SUPPORTED,
+                "reason": "The Arogya quote states 48 months."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft), verifier=backend)
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertIsNone(trace["final_answer"])
+        self.assertIsNone(trace["correction"])
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"],
+            INSUFFICIENT_EVIDENCE)
+        self.assertNotEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        self.assertEqual(
+            trace["claims"][0]["governing_source"], PRODUCTS)
+
+    def test_g_governing_malformed_is_refused(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return "not json"
+            return json.dumps(
+                {"verdict": SUPPORTED, "reason": "Arogya says 48."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft), verifier=backend)
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertIsNone(trace["final_answer"])
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"],
+            INSUFFICIENT_EVIDENCE)
+
+    def test_g_governing_supported_governs_over_superseded(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": SUPPORTED,
+                    "reason": "Governing passage supports this."})
+            return json.dumps({
+                "verdict": INSUFFICIENT_EVIDENCE,
+                "reason": "Superseded passage alone is insufficient."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is maximum up to 36 months "
+                     "of continuous coverage.",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft), verifier=backend)
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"], SUPPORTED)
+
     def test_d_misleading_quote_is_not_verified(self):
         # Quote exists verbatim, but it does not support the claim:
         # the 36-month norm expressly does not apply to Overseas
