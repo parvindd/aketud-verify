@@ -11,18 +11,26 @@ same fixtures the baseline tests require.
 """
 import hashlib
 import json
+import os
+import sys
+import types
 import unittest
+from unittest import mock
 
 try:
     from verify.evidence import check_evidence, extract_text
     from verify.pipeline import CORRECTED, REFUSED, VERIFIED, answer
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
-                                 SUPPORTED, Verifier, verify_claim)
+                                 SUPPORTED, Verifier, make_model_backend,
+                                 verify_claim)
+    from verify.verifier import _PROMPT
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
     from pipeline import CORRECTED, REFUSED, VERIFIED, answer
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
-                          SUPPORTED, Verifier, verify_claim)
+                          SUPPORTED, Verifier, make_model_backend,
+                          verify_claim)
+    from verifier import _PROMPT
 
 PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
 AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
@@ -102,6 +110,62 @@ class TestVerifierParsing(unittest.TestCase):
         self.assertEqual(
             verify_claim("c", "q", "src")["verdict"],
             INSUFFICIENT_EVIDENCE)
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self._content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def _stub_requests(captured, content='{"verdict": "SUPPORTED", '
+                                      '"reason": "ok"}'):
+    fake = types.ModuleType("requests")
+
+    def post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        return _FakeResponse(content)
+
+    fake.post = post
+    return fake
+
+
+class TestPromptFormatting(unittest.TestCase):
+    def test_prompt_format_does_not_raise(self):
+        prompt = _PROMPT.format(
+            claim="The PED cap is 36 months.",
+            quote=PED_QUOTE, source_text="some source text")
+        self.assertIn("The PED cap is 36 months.", prompt)
+        self.assertIn(PED_QUOTE, prompt)
+        self.assertIn("some source text", prompt)
+        # Literal JSON instruction survives formatting.
+        self.assertIn('{"verdict":', prompt)
+        self.assertIn('"INSUFFICIENT_EVIDENCE"', prompt)
+
+    def test_real_backend_builds_prompt_with_stubbed_post(self):
+        captured = {}
+        env = {"META_API_KEY": "test-key", "VERIFIER_MODEL": "model-x",
+               "META_API_BASE_URL": "https://example.invalid"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            raw = backend("The PED cap is 36 months.", PED_QUOTE,
+                          "full source text")
+        self.assertEqual(
+            json.loads(raw), {"verdict": SUPPORTED, "reason": "ok"})
+        prompt = captured["json"]["messages"][0]["content"]
+        self.assertIn("The PED cap is 36 months.", prompt)
+        self.assertIn(PED_QUOTE, prompt)
+        self.assertIn("full source text", prompt)
+        self.assertIn('{"verdict":', prompt)
+        self.assertEqual(captured["json"]["model"], "model-x")
 
 
 class TestPipelineScenarios(unittest.TestCase):

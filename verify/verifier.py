@@ -31,8 +31,8 @@ _VERDICTS = (SUPPORTED, CONTRADICTED, INSUFFICIENT_EVIDENCE)
 _PROMPT = (
     "You are a strict claim verifier. Decide whether the claim is "
     "supported by the quoted passage from the source. Reply with "
-    'strict JSON only: {"verdict": "SUPPORTED" | "CONTRADICTED" | '
-    '"INSUFFICIENT_EVIDENCE", "reason": "<one or two sentences>"}. '
+    'strict JSON only: {{"verdict": "SUPPORTED" | "CONTRADICTED" | '
+    '"INSUFFICIENT_EVIDENCE", "reason": "<one or two sentences>"}}. '
     "Use CONTRADICTED when the passage (or a rule it is superseded "
     "by) says the opposite, INSUFFICIENT_EVIDENCE when the passage "
     "does not establish the claim, and SUPPORTED only when the "
