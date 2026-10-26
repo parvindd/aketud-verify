@@ -15,7 +15,9 @@
      the superseded source's verdict is never used;
    - ``REFUSED`` — any claim with failed evidence or
      ``INSUFFICIENT_EVIDENCE`` (including a malformed draft, a proposer
-     or verifier failure, or no claims at all);
+     or verifier failure, or no claims at all). Every ``REFUSED``
+     trace carries ``refusal_reason`` and a user-facing
+     ``final_answer`` (never ``None``);
    - ``SUPERSEDED`` — a claim faithful to its own source
      (``SUPPORTED`` against that source) but contradicted only by a
      governing rule that supersedes that source: the claim verdict
@@ -27,7 +29,8 @@
      quote.
 
 Fail closed: anything not proven ``SUPPORTED`` is never shown as
-verified, and a ``REFUSED`` result carries no answer text.
+verified. A ``REFUSED`` result carries no verified answer text; its
+``final_answer`` is the refusal message described above.
 
 The proposer and verifier are injectable callables so tests run
 offline with mocks. The default proposer/verifier read
@@ -54,6 +57,44 @@ VERIFIED = "VERIFIED"
 REFUSED = "REFUSED"
 CORRECTED = "CORRECTED"
 SUPERSEDED = "SUPERSEDED"
+
+REFUSAL_NO_API_KEY = "no API key"
+REFUSAL_PROPOSER_ERROR = "proposer error"
+REFUSAL_NO_CLAIMS = "no claims"
+REFUSAL_EVIDENCE_NOT_FOUND = "evidence not found"
+REFUSAL_VERIFIER_INSUFFICIENT = "verifier insufficient"
+REFUSAL_GOVERNING_INSUFFICIENT = "governing insufficient"
+
+REFUSAL_PREFIX = "I can't confirm this from the official documents I have."
+
+_REFUSAL_DETAILS = {
+    REFUSAL_NO_API_KEY: "No API key is configured.",
+    REFUSAL_PROPOSER_ERROR: "The draft generator failed.",
+    REFUSAL_NO_CLAIMS: "The draft contained no claims to verify.",
+    REFUSAL_EVIDENCE_NOT_FOUND: (
+        "The cited evidence was not found in the official documents."),
+    REFUSAL_VERIFIER_INSUFFICIENT: (
+        "The verifier could not confirm the claim from the cited passage."),
+    REFUSAL_GOVERNING_INSUFFICIENT: (
+        "The governing document could not confirm the claim."),
+}
+
+
+def _refuse(trace, reason, detail=None, exc=None):
+    """Finalise ``trace`` as REFUSED with a reason and message."""
+    trace["decision"] = REFUSED
+    trace["refusal_reason"] = reason
+    detail = detail or _REFUSAL_DETAILS.get(
+        reason, "The claim could not be verified.")
+    detail = " ".join(str(detail).split())
+    trace["refusal_detail"] = detail
+    if exc is not None:
+        trace["exception_type"] = type(exc).__name__
+        trace["error_type"] = type(exc).__name__
+        trace["exception"] = str(exc)
+    trace["correction"] = None
+    trace["final_answer"] = REFUSAL_PREFIX + " " + detail
+    return trace
 
 _PROPOSER_PROMPT = (
     "Draft an answer to the question using only the source passages "
@@ -248,33 +289,46 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
     """
     trace = {"question": question, "lang": lang, "draft": None,
              "claims": [], "decision": REFUSED, "final_answer": None,
-             "correction": None}
+             "correction": None, "refusal_reason": None,
+             "refusal_detail": None, "exception_type": None,
+             "error_type": None}
     if question is None or not str(question).strip():
-        trace["correction"] = None
-        return trace
+        return _refuse(trace, REFUSAL_NO_CLAIMS)
     if proposer is None:
         try:
             proposer = make_model_proposer()
-        except Exception:
-            return trace
+        except Exception as exc:
+            return _refuse(trace, REFUSAL_NO_API_KEY, exc=exc)
     if verifier is None:
         try:
             verifier = Verifier(make_model_backend())
-        except Exception:
+        except Exception as exc:
+            trace["exception_type"] = type(exc).__name__
+            trace["error_type"] = type(exc).__name__
+            trace["exception"] = str(exc)
             verifier = Verifier(None)
     elif not isinstance(verifier, Verifier):
         verifier = Verifier(verifier)
 
     try:
         draft = proposer(question, lang)
-    except Exception:
-        return trace
+    except Exception as exc:
+        return _refuse(trace, REFUSAL_PROPOSER_ERROR, exc=exc)
     trace["draft"] = draft
     claims = _normalise_draft(draft)
     if not claims:  # malformed draft or no claims: fail closed
-        return trace
+        return _refuse(trace, REFUSAL_NO_CLAIMS)
 
     has_refusal = False
+    refusal_reason = None
+    refusal_detail = None
+
+    def _note_refusal(reason, detail=None):
+        nonlocal has_refusal, refusal_reason, refusal_detail
+        has_refusal = True
+        if refusal_reason is None:
+            refusal_reason = reason
+            refusal_detail = detail
     has_contradicted = False
     has_superseded = False
     corrections = []
@@ -293,7 +347,8 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             entry["reason"] = (
                 "Evidence check failed (exists=%s, found=%s); claim "
                 "not verified." % (evidence["exists"], evidence["found"]))
-            has_refusal = True
+            entry["refusal_reason"] = REFUSAL_EVIDENCE_NOT_FOUND
+            _note_refusal(REFUSAL_EVIDENCE_NOT_FOUND)
             trace["claims"].append(entry)
             continue
         source_text = extract_text(item["source_file"], raw_dir=raw_dir)
@@ -330,7 +385,9 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                     "(exists=%s, found=%s); claim not verified."
                     % (rule["source_file"], gov_evidence["exists"],
                        gov_evidence["found"]))
-                has_refusal = True
+                entry["refusal_reason"] = (
+                    REFUSAL_GOVERNING_INSUFFICIENT)
+                _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
                 governing_failed = True
                 break
             gov_text = extract_text(rule["source_file"], raw_dir=raw_dir)
@@ -375,13 +432,17 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             else:
                 entry["verdict"] = gov_result["verdict"]
                 entry["reason"] = gov_result["reason"]
-                has_refusal = True
+                entry["refusal_reason"] = (
+                    REFUSAL_GOVERNING_INSUFFICIENT)
+                _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
                 governing_failed = True
                 break
         if governing_rules:
             if not (governing_supported or governing_contradicted
                     or governing_failed or governing_superseded):
-                has_refusal = True
+                entry["refusal_reason"] = (
+                    REFUSAL_GOVERNING_INSUFFICIENT)
+                _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
             # No governing rule: do not present the claim's own
@@ -392,11 +453,14 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 % (item["claim"], result["reason"],
                    item["source_file"]))
         elif result["verdict"] != SUPPORTED:
-            has_refusal = True
+            entry["refusal_reason"] = REFUSAL_VERIFIER_INSUFFICIENT
+            _note_refusal(REFUSAL_VERIFIER_INSUFFICIENT)
         trace["claims"].append(entry)
 
     if has_refusal:
-        trace["decision"] = REFUSED
+        return _refuse(
+            trace, refusal_reason or REFUSAL_VERIFIER_INSUFFICIENT,
+            detail=refusal_detail)
     elif has_superseded:
         trace["decision"] = SUPERSEDED
         trace["correction"] = " ".join(

@@ -20,14 +20,24 @@ from unittest import mock
 try:
     from verify.evidence import check_evidence, extract_text
     from verify.pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED,
-                                 answer, make_model_proposer, retrieve)
+                                 REFUSAL_EVIDENCE_NOT_FOUND,
+                                 REFUSAL_GOVERNING_INSUFFICIENT,
+                                 REFUSAL_NO_API_KEY, REFUSAL_NO_CLAIMS,
+                                 REFUSAL_PREFIX, REFUSAL_PROPOSER_ERROR,
+                                 REFUSAL_VERIFIER_INSUFFICIENT, answer,
+                                 make_model_proposer, retrieve)
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend,
                                  verify_claim)
     from verify.verifier import _PROMPT, _context_window
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
-    from pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED, answer,
+    from pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED,
+                          REFUSAL_EVIDENCE_NOT_FOUND,
+                          REFUSAL_GOVERNING_INSUFFICIENT, REFUSAL_NO_API_KEY,
+                          REFUSAL_NO_CLAIMS, REFUSAL_PREFIX,
+                          REFUSAL_PROPOSER_ERROR,
+                          REFUSAL_VERIFIER_INSUFFICIENT, answer,
                           make_model_proposer, retrieve)
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend,
@@ -303,7 +313,8 @@ class TestPipelineScenarios(unittest.TestCase):
             verifier=fake_backend(
                 {"verdict": SUPPORTED, "reason": "should not matter"}))
         self.assertEqual(trace["decision"], REFUSED)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_EVIDENCE_NOT_FOUND)
         self.assertFalse(trace["claims"][0]["evidence"]["found"])
         self.assertIsNone(trace["claims"][0]["verdict"])
 
@@ -390,7 +401,8 @@ class TestPipelineScenarios(unittest.TestCase):
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], REFUSED)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_GOVERNING_INSUFFICIENT)
         self.assertIsNone(trace["correction"])
         self.assertEqual(
             trace["claims"][0]["governing_verdict"],
@@ -413,7 +425,8 @@ class TestPipelineScenarios(unittest.TestCase):
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], REFUSED)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_GOVERNING_INSUFFICIENT)
         self.assertEqual(
             trace["claims"][0]["governing_verdict"],
             INSUFFICIENT_EVIDENCE)
@@ -480,7 +493,8 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertTrue(trace["claims"][0]["evidence"]["found"])
         self.assertEqual(
             trace["claims"][0]["verdict"], INSUFFICIENT_EVIDENCE)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_VERIFIER_INSUFFICIENT)
 
     def test_e_fabricated_quote_refused_despite_supported_verdict(self):
         calls = []
@@ -499,7 +513,8 @@ class TestPipelineScenarios(unittest.TestCase):
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], REFUSED)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_EVIDENCE_NOT_FOUND)
         self.assertFalse(trace["claims"][0]["evidence"]["found"])
         # Evidence gate runs first; verifier never consulted/overrides.
         self.assertEqual(calls, [])
@@ -515,7 +530,8 @@ class TestPipelineScenarios(unittest.TestCase):
                 "What is the maximum PED waiting period?",
                 proposer=fake_proposer(draft), verifier=fake_backend(bad))
             self.assertEqual(trace["decision"], REFUSED, repr(bad))
-            self.assertIsNone(trace["final_answer"])
+            self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+            self.assertEqual(trace["refusal_reason"], REFUSAL_VERIFIER_INSUFFICIENT)
             self.assertEqual(
                 trace["claims"][0]["verdict"], INSUFFICIENT_EVIDENCE)
 
@@ -538,7 +554,85 @@ class TestPipelineScenarios(unittest.TestCase):
                        verifier=fake_backend(
                            {"verdict": SUPPORTED, "reason": "x"}))
         self.assertEqual(trace["decision"], REFUSED)
-        self.assertIsNone(trace["final_answer"])
+        self.assertTrue(trace["final_answer"].startswith(REFUSAL_PREFIX))
+        self.assertEqual(trace["refusal_reason"], REFUSAL_PROPOSER_ERROR)
+        self.assertEqual(trace["exception_type"], "RuntimeError")
+
+
+class TestRefusalReasons(unittest.TestCase):
+    def assert_refused(self, trace, reason):
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertEqual(trace["refusal_reason"], reason)
+        self.assertIsNotNone(trace["final_answer"])
+        self.assertTrue(
+            trace["final_answer"].startswith(REFUSAL_PREFIX + " "))
+        self.assertNotIn("\n", trace["final_answer"])
+        self.assertGreater(len(trace["final_answer"]),
+                           len(REFUSAL_PREFIX) + 1)
+        self.assertIsNone(trace["correction"])
+
+    def test_no_api_key(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            trace = answer("What is the PED waiting period?")
+        self.assert_refused(trace, REFUSAL_NO_API_KEY)
+        self.assertEqual(trace["exception_type"], "RuntimeError")
+
+    def test_proposer_error(self):
+        def boom(question, lang):
+            raise RuntimeError("proposer down")
+
+        trace = answer("Anything?", proposer=boom,
+                       verifier=fake_backend(
+                           {"verdict": SUPPORTED, "reason": "x"}))
+        self.assert_refused(trace, REFUSAL_PROPOSER_ERROR)
+        self.assertEqual(trace["exception_type"], "RuntimeError")
+
+    def test_no_claims(self):
+        for draft in ({"claims": []}, "not json"):
+            trace = answer(
+                "Anything?", proposer=fake_proposer(draft),
+                verifier=fake_backend(
+                    {"verdict": SUPPORTED, "reason": "x"}))
+            self.assert_refused(trace, REFUSAL_NO_CLAIMS)
+
+    def test_evidence_not_found(self):
+        draft = {"claims": [{
+            "claim": "The PED waiting period is 12 months.",
+            "source_file": PRODUCTS,
+            "quote": "The waiting period shall be twelve months."}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "x"}))
+        self.assert_refused(trace, REFUSAL_EVIDENCE_NOT_FOUND)
+
+    def test_verifier_insufficient(self):
+        draft = {"claims": [{
+            "claim": "The PED cap applies to Overseas Travel Policies.",
+            "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+        trace = answer(
+            "Does the PED cap apply to overseas travel policies?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": INSUFFICIENT_EVIDENCE, "reason": "no"}))
+        self.assert_refused(trace, REFUSAL_VERIFIER_INSUFFICIENT)
+
+    def test_governing_insufficient(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": INSUFFICIENT_EVIDENCE, "reason": "no"})
+            return json.dumps(
+                {"verdict": SUPPORTED, "reason": "Arogya says 48."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft), verifier=backend)
+        self.assert_refused(trace, REFUSAL_GOVERNING_INSUFFICIENT)
 
 
 if __name__ == "__main__":
