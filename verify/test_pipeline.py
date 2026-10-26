@@ -196,6 +196,8 @@ class TestAuthority(unittest.TestCase):
             self.assertIn(key, first)
         self.assertEqual(first["source_file"], PRODUCTS)
         self.assertEqual(first["quote"], PED_QUOTE)
+        self.assertEqual(first["value"], "36 months")
+        self.assertEqual(first["extracted_value"], "36 months")
         self.assertIn(AROGYA, first["supersedes"])
         self.assertIn("PED", first["topic"])
         self.assertTrue(first["issuer"])
@@ -303,6 +305,11 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertTrue(claim["evidence"]["page_text_hash"])
         self.assertEqual(claim["verdict"], SUPPORTED)
         self.assertIn("36 months", trace["final_answer"])
+        self.assertEqual(
+            trace["final_answer"],
+            "The PED waiting period is maximum up to 36 months of "
+            "continuous coverage. (Source: "
+            "irdai-insurance-products-regulations-2024.pdf)")
 
     def test_b_unsupported_claim_is_refused(self):
         draft = {"claims": [{
@@ -320,6 +327,11 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertEqual(trace["refusal_reason"], REFUSAL_EVIDENCE_NOT_FOUND)
         self.assertFalse(trace["claims"][0]["evidence"]["found"])
         self.assertIsNone(trace["claims"][0]["verdict"])
+        self.assertEqual(
+            trace["final_answer"],
+            "I can't confirm this from the official documents I "
+            "have. The cited evidence was not found in the official "
+            "documents.")
 
     def test_c_superseded_ped_48_is_superseded(self):
         # The fake supports the claim against the Arogya quote and
@@ -352,18 +364,17 @@ class TestPipelineScenarios(unittest.TestCase):
         blob = json.dumps(trace)
         self.assertIn("36 months", blob)
         self.assertIn("48 months", trace["final_answer"])
-        # Message: "<source> says X, but <governing title>
-        # (effective <date>) caps/sets Y. Current rule: <quote>."
         msg = trace["final_answer"]
         self.assertEqual(trace["correction"], msg)
-        self.assertIn(AROGYA + " says PED waiting period is 48 months",
-                      msg)
-        self.assertIn(
-            "IRDAI (Insurance Products) Regulations, 2024, "
-            "Schedule III, Regulation 7 (effective 2024-03-22)", msg)
-        self.assertIn("caps/sets", msg)
-        self.assertIn("Current rule: " + PED_QUOTE, msg)
+        self.assertEqual(
+            msg,
+            "Current rule: maximum 36 months (IRDAI (Insurance "
+            "Products) Regulations, 2024, Schedule III, Regulation "
+            "7). Arogya Sanjeevani prospectus (HDFC ERGO specimen) "
+            "still says 48 months, but the 2024 regulation overrides "
+            "it.\n" + PED_QUOTE)
         self.assertNotIn(AROGYA_48_QUOTE, msg)
+        self.assertNotIn("Governing passage caps PED at 36 months.", msg)
         self.assertEqual(
             trace["claims"][0]["governing_source"], PRODUCTS)
         self.assertEqual(
@@ -470,8 +481,8 @@ class TestPipelineScenarios(unittest.TestCase):
             trace["claims"][0]["governing_verdict"], SUPPORTED)
 
     def test_h_contradicted_without_governing_uses_reason_only(self):
-        # No governing rule for PRODUCTS: the correction must not
-        # present the claim's own quote as what the source says.
+        # CORRECTED final_answer is built from structured fields
+        # (extracted value + quote + title), never claim/reason text.
         reason = "The passage caps PED at 36 months, not 12."
         draft = {"claims": [{
             "claim": "PED waiting period is 12 months",
@@ -483,10 +494,14 @@ class TestPipelineScenarios(unittest.TestCase):
                 {"verdict": CONTRADICTED, "reason": reason}))
         self.assertEqual(trace["decision"], CORRECTED)
         self.assertEqual(trace["claims"][0]["verdict"], CONTRADICTED)
-        self.assertIn(reason, trace["correction"])
-        self.assertIn(PRODUCTS, trace["correction"])
-        self.assertNotIn(PED_QUOTE, trace["correction"])
-        self.assertNotIn("actually says", trace["correction"])
+        self.assertEqual(
+            trace["final_answer"],
+            "The cited source (IRDAI (Insurance Products) "
+            "Regulations, 2024, Schedule III, Regulation 7) says "
+            "the maximum is 36 months.\n" + PED_QUOTE)
+        self.assertNotIn(reason, trace["final_answer"])
+        self.assertNotIn("PED waiting period is 12 months",
+                         trace["final_answer"])
         self.assertEqual(trace["final_answer"], trace["correction"])
 
     def test_d_misleading_quote_is_not_verified(self):

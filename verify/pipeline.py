@@ -44,14 +44,17 @@ unless those are set and the defaults are used.
 """
 import json
 import os
+import re
 
 try:
-    from verify.authority import REGISTRY, governing_for, governing_title
+    from verify.authority import (REGISTRY, governing_for, governing_title,
+                                  source_title)
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend)
 except ImportError:  # run as top-level modules (cd verify; unittest)
-    from authority import REGISTRY, governing_for, governing_title
+    from authority import (REGISTRY, governing_for, governing_title,
+                           source_title)
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend)
@@ -81,6 +84,55 @@ _REFUSAL_DETAILS = {
     REFUSAL_GOVERNING_INSUFFICIENT: (
         "The governing document could not confirm the claim."),
 }
+
+
+_VALUE_RE = re.compile(r"(\d+\s*(?:months?|days?|years?))", re.I)
+
+
+def _extract_value(text):
+    """Extract a duration value (e.g. '36 months') from ``text``."""
+    if not text:
+        return None
+    match = _VALUE_RE.search(str(text))
+    return " ".join(match.group(1).split()) if match else None
+
+
+def _build_verified(entries):
+    return " ".join(
+        "%s (Source: %s)" % (e["claim"], e["source_file"])
+        for e in entries)
+
+
+def _build_superseded(records):
+    parts = []
+    for rec in records:
+        sentence = (
+            "Current rule: maximum %s (%s). %s still says %s, "
+            "but the 2024 regulation overrides it."
+            % (rec["governing_value"], rec["governing_title"],
+               rec["cited_title"], rec["cited_value"]))
+        parts.append(sentence + "\n" + rec["governing_quote"])
+    return "\n".join(parts)
+
+
+def _build_corrected(records):
+    parts = []
+    for rec in records:
+        if rec.get("governing_quote"):
+            parts.append(
+                "The governing source (%s) says the maximum is %s."
+                "\n%s" % (rec["governing_title"],
+                          rec["governing_value"],
+                          rec["governing_quote"]))
+        elif rec.get("value"):
+            parts.append(
+                "The cited source (%s) says the maximum is %s.\n%s"
+                % (rec["cited_title"], rec["value"], rec["quote"]))
+        else:
+            parts.append(
+                "The cited source (%s) says:\n%s"
+                % (rec["cited_title"], rec["quote"]))
+    return "\n".join(parts)
 
 
 def _refuse(trace, reason, detail=None, exc=None):
@@ -334,15 +386,19 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             refusal_detail = detail
     has_contradicted = False
     has_superseded = False
-    corrections = []
-    superseded_messages = []
+    corrected_records = []
+    superseded_records = []
     for item in claims:
         entry = {"claim": item["claim"],
                  "source_file": item["source_file"],
                  "quote": item["quote"],
                  "evidence": None, "verdict": None, "reason": None,
                  "verifier_verdict": None, "verifier_reason": None,
-                 "governing_verdict": None, "governing_reason": None}
+                 "governing_verdict": None, "governing_reason": None,
+                 "cited_value": _extract_value(item["quote"])
+                 or _extract_value(item["claim"]),
+                 "cited_title": source_title(item["source_file"]),
+                 "governing_value": None}
         evidence = check_evidence(item["source_file"], item["quote"],
                                   raw_dir=raw_dir)
         entry["evidence"] = evidence
@@ -389,6 +445,9 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 rule["source_file"])
             entry["governing_effective_date"] = rule.get(
                 "effective_date")
+            entry["governing_value"] = (
+                rule.get("value") or rule.get("extracted_value")
+                or _extract_value(rule["quote"]))
             if not (gov_evidence["exists"] and gov_evidence["found"]):
                 entry["governing_reason"] = (
                     "Governing evidence check failed for %s "
@@ -412,26 +471,28 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                     # verdict above stays SUPPORTED.
                     governing_superseded = True
                     has_superseded = True
-                    detail = str(gov_result["reason"]).strip()
-                    detail = detail.rstrip(".")
-                    superseded_messages.append(
-                        "%s says %s, but %s (effective %s) caps/sets "
-                        "%s. Current rule: %s."
-                        % (item["source_file"], item["claim"],
-                           governing_title(rule["source_file"]),
-                           rule.get("effective_date", ""),
-                           detail, rule["quote"]))
+                    superseded_records.append({
+                        "governing_value": entry["governing_value"],
+                        "governing_title": governing_title(
+                            rule["source_file"]),
+                        "governing_quote": rule["quote"],
+                        "cited_title": source_title(
+                            item["source_file"]),
+                        "cited_value": entry["cited_value"],
+                    })
                 else:
                     governing_contradicted = True
                     has_contradicted = True
-                    corrections.append(
-                        "Claim %r is contradicted. %s Governing source "
-                        "%s (%s) supersedes %s on %s and actually says: %r"
-                        % (item["claim"], gov_result["reason"],
-                           rule["source_file"],
-                           governing_title(rule["source_file"]),
-                           item["source_file"], rule["topic"],
-                           rule["quote"]))
+                    corrected_records.append({
+                        "governing_value": entry["governing_value"],
+                        "governing_title": governing_title(
+                            rule["source_file"]),
+                        "governing_quote": rule["quote"],
+                        "cited_title": source_title(
+                            item["source_file"]),
+                        "quote": item["quote"],
+                        "value": _extract_value(item["quote"]),
+                    })
                 break
             elif gov_result["verdict"] == SUPPORTED:
                 governing_supported = True
@@ -449,13 +510,11 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
-            # No governing rule: do not present the claim's own
-            # quote as what the source says; use only the
-            # verifier's reason and the source name.
-            corrections.append(
-                "Claim %r is contradicted. %s Source: %s."
-                % (item["claim"], result["reason"],
-                   item["source_file"]))
+            corrected_records.append({
+                "cited_title": source_title(item["source_file"]),
+                "quote": item["quote"],
+                "value": _extract_value(item["quote"]),
+            })
         elif result["verdict"] != SUPPORTED:
             entry["refusal_reason"] = REFUSAL_VERIFIER_INSUFFICIENT
             _note_refusal(REFUSAL_VERIFIER_INSUFFICIENT)
@@ -467,15 +526,16 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             detail=refusal_detail)
     elif has_superseded:
         trace["decision"] = SUPERSEDED
-        trace["correction"] = " ".join(
-            superseded_messages + corrections)
+        parts = [_build_superseded(superseded_records)]
+        if corrected_records:
+            parts.append(_build_corrected(corrected_records))
+        trace["correction"] = "\n".join(p for p in parts if p)
         trace["final_answer"] = trace["correction"]
     elif has_contradicted:
         trace["decision"] = CORRECTED
-        trace["correction"] = " ".join(corrections)
+        trace["correction"] = _build_corrected(corrected_records)
         trace["final_answer"] = trace["correction"]
     else:
         trace["decision"] = VERIFIED
-        trace["final_answer"] = " ".join(
-            c["claim"] for c in trace["claims"])
+        trace["final_answer"] = _build_verified(trace["claims"])
     return trace

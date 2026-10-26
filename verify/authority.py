@@ -26,6 +26,8 @@ REGISTRY = [
         "topic": "PED waiting period",
         "source_file": "irdai-insurance-products-regulations-2024.pdf",
         "quote": _PED_QUOTE,
+        "value": "36 months",
+        "extracted_value": "36 months",
         "issuer": "IRDAI",
         "effective_date": "2024-03-22",
         "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
@@ -44,11 +46,17 @@ _TOPIC_KEYWORDS = {
     ),
 }
 
-# Human-readable title for the governing source of the first entry.
+# Human-readable titles for known sources.
 _TITLES = {
     "irdai-insurance-products-regulations-2024.pdf": (
         "IRDAI (Insurance Products) Regulations, 2024, "
         "Schedule III, Regulation 7"
+    ),
+    "arogya-sanjeevani-hdfc-ergo.pdf": (
+        "Arogya Sanjeevani prospectus (HDFC ERGO specimen)"
+    ),
+    "master-circular-health-2024.pdf": (
+        "Master Circular on Health Insurance Business, 29 May 2024"
     ),
 }
 
@@ -56,6 +64,16 @@ _TITLES = {
 def governing_title(source_file):
     """Return a human-readable title for a governing source, if known."""
     return _TITLES.get(source_file, source_file)
+
+
+def source_title(source_file):
+    """Return a human-readable title for any known source."""
+    return _TITLES.get(source_file, source_file)
+
+
+# Aliases for discoverability.
+cited_title = source_title
+title_for = source_title
 
 
 def topic_matches(rule, text):
