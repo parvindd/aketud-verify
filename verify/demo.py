@@ -312,6 +312,48 @@ def format_trace(trace, *, color=False, raw=False):
     return "\n".join(lines)
 
 
+def _live_call_trace(transcript, lang):
+    """Check a call with live Muse Spark proposer + verifier.
+
+    The proposer is Muse Spark (claim extraction mapped to the
+    registered rules); the verifier is Spark Open via ``VERIFIER_*``
+    (Meta fallback, labelled). Either failing to build falls back
+    honestly: no proposer means the deterministic extractor, no
+    verifier means ``rule only (no model)`` (Fix 30).
+    """
+    try:
+        from verify.callcheck import check_call
+    except ImportError:
+        from callcheck import check_call
+    proposer, verifier = _call_models()
+    return check_call(transcript, lang=lang, proposer=proposer,
+                      verifier=verifier)
+
+
+def _call_models():
+    """Return (proposer, verifier) for call modes; either may be None."""
+    try:
+        from verify.callcheck import make_call_proposer
+        from verify.verifier import Verifier, make_model_backend
+    except ImportError:
+        from callcheck import make_call_proposer
+        from verifier import Verifier, make_model_backend
+    proposer = None
+    try:
+        proposer = make_call_proposer()
+    except Exception:
+        proposer = None
+    verifier = None
+    try:
+        verifier = Verifier(make_model_backend())
+    except Exception:
+        verifier = None
+    return proposer, verifier
+
+
+_build_call_models = _call_models
+
+
 def format_voice_stage(transcript, *, color=False):
     """Render Stage 0 — Muse Voice Transcribe for ``transcript``."""
     lines = []
@@ -367,10 +409,10 @@ def main(argv=None, stream=None):
             return 1
         call_lang = resolve_lang(parsed.lang, transcript)
         try:
-            from verify.callcheck import check_call, format_call_trace
+            from verify.callcheck import format_call_trace
         except ImportError:
-            from callcheck import check_call, format_call_trace
-        trace = check_call(transcript, lang=call_lang)
+            from callcheck import format_call_trace
+        trace = _live_call_trace(transcript, call_lang)
         use_color = supports_color(stream)
         print(format_voice_stage(transcript, color=use_color),
               file=stream)
@@ -387,10 +429,10 @@ def main(argv=None, stream=None):
         call_lang = resolve_lang(parsed.lang, parsed.call)
         load_env()
         try:
-            from verify.callcheck import check_call, format_call_trace
+            from verify.callcheck import format_call_trace
         except ImportError:
-            from callcheck import check_call, format_call_trace
-        trace = check_call(parsed.call, lang=call_lang)
+            from callcheck import format_call_trace
+        trace = _live_call_trace(parsed.call, call_lang)
         print(format_call_trace(
             trace, color=supports_color(stream)), file=stream)
         return 0

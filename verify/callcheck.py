@@ -24,6 +24,7 @@ always ends with safety advice, labelled as advice (not a rule),
 directing the user to the insurer's official channels or Bima
 Bharosa.
 """
+import os
 import re
 
 try:
@@ -40,6 +41,11 @@ except ImportError:  # run as top-level modules (cd verify)
 SUPPORTED_BY_RULES = "SUPPORTED BY RULES"
 CONTRADICTS_RULES = "CONTRADICTS RULES"
 CANNOT_BE_CONFIRMED = "CANNOT BE CONFIRMED (ask insurer)"
+
+# Honest provenance labels (Fix 30).
+EXTRACTED_BY_MODEL = "Muse Spark"
+EXTRACTED_BY_KEYWORD = "keyword safety net"
+RULE_ONLY = "rule only (no model)"
 
 SAFETY_ADVICE = (
     "We cannot see your policy. Check its status only with your "
@@ -109,6 +115,28 @@ def _rule_entry(rule, scope=None):
     return entries[0] if entries else None
 
 
+_KIND_RULE = {
+    "revival_guaranteed": 1,
+    "payment_link": 1,
+    "policy_status": 1,
+    "revival_deadline": 2,
+    "revival_fee": 3,
+    "irdai_calling": 4,
+}
+
+_CANONICAL_CLAIMS = {
+    "irdai_calling": (
+        "Caller claims IRDAI is calling about a bonus/policy"),
+    "revival_deadline": (
+        "Caller claims the policy must be revived today or it "
+        "will lapse forever"),
+    "revival_guaranteed": "Caller claims revival is guaranteed",
+    "revival_fee": "Caller claims a revival fee must be paid",
+    "payment_link": "Caller asks for payment through a link",
+    "policy_status": "Caller claims a specific policy status",
+}
+
+
 def detect_product_type(transcript):
     """Return ``linked``, ``non-linked`` or ``unknown``."""
     lowered = str(transcript or "").lower()
@@ -150,6 +178,7 @@ def extract_caller_claims(transcript):
             "quote": entry["quote"],
             "citation": entry.get("citation", ""),
             "scope": entry.get("scope", ""),
+            "extracted_by": EXTRACTED_BY_KEYWORD,
         })
 
     # Rule 4: IRDAI calling / selling / announcing a bonus.
@@ -321,6 +350,7 @@ def keyword_flagged_claims(transcript, existing_claims):
                 "citation": entry.get("citation", ""),
                 "scope": entry.get("scope", ""),
                 "sentence": sentence,
+                "extracted_by": EXTRACTED_BY_KEYWORD,
             })
     return out
 
@@ -410,22 +440,157 @@ def _normalise_proposer_claims(draft):
         if not isinstance(item, dict):
             continue
         claim = item.get("claim", item.get("text"))
+        kind = item.get("kind") or _infer_kind(claim)
+        rule = item.get("rule")
+        if not isinstance(rule, int):
+            rule = _KIND_RULE.get(kind)
+        entry = _rule_entry(rule, scope=item.get("scope")) \
+            if isinstance(rule, int) else None
         source_file = item.get("source_file", item.get("source"))
+        if not (isinstance(source_file, str) and source_file.strip()):
+            source_file = (entry or {}).get("source_file")
         quote = item.get("quote")
+        if not (isinstance(quote, str) and quote.strip()):
+            quote = (entry or {}).get("quote")
+        if not (isinstance(claim, str) and claim.strip()):
+            claim = _CANONICAL_CLAIMS.get(kind)
         if not all(isinstance(v, str) and v.strip()
                    for v in (claim, source_file, quote)):
             continue
-        rule = item.get("rule")
-        entry = _rule_entry(rule) if isinstance(rule, int) else None
         out.append({
-            "claim": claim, "kind": item.get("kind", ""),
+            "claim": claim, "kind": kind,
             "rule": rule, "source_file": source_file, "quote": quote,
             "citation": (item.get("citation")
                          or (entry or {}).get("citation", "")),
             "scope": (item.get("scope")
                       or (entry or {}).get("scope", "")),
+            "extracted_by": (item.get("extracted_by")
+                             or item.get("extraction_source") or ""),
         })
     return out
+
+
+_CALL_PROPOSER_PROMPT = (
+    "You extract the CALLER's claims from a call transcript. The "
+    "transcript may be in Hindi (Devanagari), Hinglish (Roman Hindi) "
+    "or English. Do not answer any question; extract only what the "
+    "caller claims. Map each claim to one registered rule kind: "
+    "revival_guaranteed (rule 1, revival guaranteed/pakka), "
+    "revival_deadline (rule 2, revive today or lapse forever), "
+    "revival_fee (rule 3, a revival fee/charge must be paid), "
+    "irdai_calling (rule 4, IRDAI calling/selling/announcing a "
+    "bonus), payment_link (rule 1, pay through a link sent by the "
+    "caller), policy_status (rule 1, a specific policy status). "
+    "Reply with strict JSON only: {{\"claims\": [{{\"kind\": "
+    "\"<kind>\", \"rule\": <rule number>, \"claim\": \"<one "
+    "caller claim, in English>\"}}]}}. If the caller makes none of "
+    "these claims, return {{\"claims\": []}}.\n\n"
+    "Language: {lang}\nTranscript: {transcript}"
+)
+
+
+def _expand_model_claims(parsed, transcript):
+    """Map parsed model output onto the registered rules (Fix 30)."""
+    if isinstance(parsed, str):
+        import json as _json
+        try:
+            parsed = _json.loads(parsed)
+        except (ValueError, TypeError):
+            return {"claims": []}
+    if not isinstance(parsed, dict):
+        return {"claims": []}
+    items = parsed.get("claims")
+    if not isinstance(items, list):
+        return {"claims": []}
+    product = detect_product_type(transcript)
+    amount = _AMOUNT_RE.search(str(transcript or ""))
+    out, seen = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind") or _infer_kind(
+            item.get("claim", item.get("text")))
+        rule = item.get("rule")
+        if not isinstance(rule, int):
+            rule = _KIND_RULE.get(kind)
+        if kind not in _KIND_RULE or not isinstance(rule, int):
+            continue
+        if kind in seen:
+            continue
+        seen.add(kind)
+        scope = item.get("scope")
+        if kind == "revival_deadline" and not scope:
+            scope = ("linked products only" if product == "linked"
+                     else "non-linked products only")
+        entry = _rule_entry(rule, scope=scope)
+        if entry is None:
+            continue
+        claim = item.get("claim", item.get("text"))
+        if not (isinstance(claim, str) and claim.strip()):
+            claim = _CANONICAL_CLAIMS[kind]
+        if kind == "revival_fee" and amount \
+                and amount.group(0) not in claim:
+            claim = "%s (%s)" % (
+                _CANONICAL_CLAIMS[kind], amount.group(0))
+        out.append({
+            "claim": claim, "kind": kind, "rule": rule,
+            "source_file": entry["source_file"],
+            "quote": entry["quote"],
+            "citation": entry.get("citation", ""),
+            "scope": entry.get("scope", ""),
+            "extracted_by": EXTRACTED_BY_MODEL,
+        })
+    return {"claims": out}
+
+
+def make_call_proposer(model=None, *, timeout=60):
+    """Build the live Muse Spark call-claim proposer (Fix 30).
+
+    Reads ``META_API_KEY``, ``PROPOSER_MODEL`` and
+    ``META_API_BASE_URL`` (Muse Spark, same env as the pipeline
+    proposer); raises ``RuntimeError`` if unset. Not called by
+    offline tests, which inject fake proposers. The returned
+    callable is ``(transcript, lang) -> {"claims": [...]}`` with
+    every claim mapped onto a registered rule's exact
+    source/quote, and carries ``model`` / ``extracted_by``.
+    """
+    api_key = os.environ.get("META_API_KEY")
+    model_id = model or os.environ.get("PROPOSER_MODEL") \
+        or "muse-spark-1.3"
+    base_url = os.environ.get("META_API_BASE_URL")
+    if not api_key or not base_url:
+        raise RuntimeError(
+            "META_API_KEY, PROPOSER_MODEL and META_API_BASE_URL must "
+            "be set to use the Muse Spark call proposer.")
+
+    def proposer(transcript, lang):
+        import requests  # allowed dependency; imported lazily
+
+        prompt = _CALL_PROPOSER_PROMPT.format(
+            lang=lang, transcript=transcript)
+        resp = requests.post(
+            base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": "Bearer " + api_key,
+                     "Content-Type": "application/json"},
+            json={"model": model_id,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        return _expand_model_claims(content, transcript)
+
+    proposer.model = model_id
+    proposer.extracted_by = EXTRACTED_BY_MODEL
+    proposer.label = EXTRACTED_BY_MODEL
+    proposer.is_model = True
+    return proposer
+
+
+# Aliases for discoverability.
+make_model_call_proposer = make_call_proposer
+make_callcheck_proposer = make_call_proposer
 
 
 _LOCALISED_CLAIMS = {
@@ -496,6 +661,16 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     verdict from the mapped rule's verified meaning is used. Every
     claim runs the deterministic evidence check first; the verifier
     is never consulted on failed evidence.
+
+    Fix 30: the deterministic keyword pass runs AFTER the (model)
+    proposer as a safety net. Each claim is labelled honestly:
+    ``extracted_by`` is ``Muse Spark`` for proposer claims and
+    ``keyword safety net`` for keyword/default claims, and
+    ``verified_by`` is the verifier model or ``rule only
+    (no model)``. The deterministic gate is final: a model
+    ``SUPPORTED`` can never override a rule ``CONTRADICTED``, and
+    fee claims with an unknown/non-linked product stay
+    ``CANNOT BE CONFIRMED`` regardless of model output.
     """
     try:
         from verify.pipeline import normalize_lang
@@ -508,16 +683,32 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
              "safety_advice": safety_advice_for(lang)}
 
     if proposer is not None:
+        proposer_label = (
+            getattr(proposer, "extracted_by", None)
+            or getattr(proposer, "label", None)
+            or EXTRACTED_BY_MODEL)
         try:
             extracted = _normalise_proposer_claims(
                 proposer(transcript, lang))
         except Exception:
             extracted = []
+        for _c in extracted:
+            if not _c.get("extracted_by"):
+                _c["extracted_by"] = proposer_label
+            _c["extraction_source"] = _c["extracted_by"]
     else:
+        proposer_label = EXTRACTED_BY_KEYWORD
         extracted = extract_caller_claims(transcript)
-    # Fix 20: deterministic keyword pass — no missed claims.
+        for _c in extracted:
+            _c.setdefault("extracted_by", EXTRACTED_BY_KEYWORD)
+            _c["extraction_source"] = _c["extracted_by"]
+    # Fix 20/30: deterministic keyword pass AFTER model extraction,
+    # as a safety net — no missed claims.
     extracted = list(extracted) + keyword_flagged_claims(
         transcript, extracted)
+    for _c in extracted:
+        _c.setdefault("extracted_by", EXTRACTED_BY_KEYWORD)
+        _c.setdefault("extraction_source", _c["extracted_by"])
 
     if verifier is None:
         backend = None
@@ -530,14 +721,32 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         trace["verifier"] = backend.label
         trace["verifier_model"] = backend.model
         trace["verifier_fallback"] = backend.fallback
+        if backend.model:
+            configured_verified_by = "%s%s" % (
+                backend.model,
+                " (fallback)" if backend.fallback else "")
+        else:
+            configured_verified_by = str(
+                backend.label).removeprefix("verifier: ") \
+                or RULE_ONLY
     else:
         trace["verifier"] = "verifier: (deterministic rules, no model)"
         trace["verifier_model"] = None
         trace["verifier_fallback"] = None
+        configured_verified_by = RULE_ONLY
+    trace["verified_by"] = configured_verified_by
+    trace["proposer"] = proposer_label
+    trace["proposer_model"] = (
+        getattr(proposer, "model", None) if proposer is not None
+        else None)
+    trace["proposer_label"] = proposer_label
 
     for item in extracted:
         entry = dict(item)
         entry.setdefault("kind", _infer_kind(entry.get("claim")))
+        if not entry.get("extracted_by"):
+            entry["extracted_by"] = EXTRACTED_BY_KEYWORD
+        entry.setdefault("extraction_source", entry["extracted_by"])
         kind = entry["kind"]
         evidence = check_evidence(entry["source_file"], entry["quote"],
                                   raw_dir=raw_dir)
@@ -547,6 +756,9 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         entry["verifier"] = trace["verifier"]
         entry["verifier_model"] = trace["verifier_model"]
         entry["verifier_fallback"] = trace["verifier_fallback"]
+        entry["verified_by"] = RULE_ONLY
+        entry["verification_source"] = RULE_ONLY
+        entry["rule_verdict"] = _semantic_verdict(entry)["verdict"]
 
         # Scope guardrails (fail closed, before any verdict display).
         if kind == "payment_link":
@@ -587,9 +799,17 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             backend.last_usage if backend is not None else None)
         entry["verifier_latency_s"] = (
             backend.last_latency_s if backend is not None else None)
+        if backend is not None:
+            entry["verified_by"] = configured_verified_by
+            entry["verification_source"] = configured_verified_by
         entry["reason"] = _specific_reason(entry, product, lang)
-        entry["verdict"] = _DISPLAY.get(
-            result["verdict"], CANNOT_BE_CONFIRMED)
+        # Deterministic rule/evidence gate (Fix 30): a model verdict
+        # can never turn a rule CONTRADICTS into SUPPORTED.
+        if entry["rule_verdict"] == CONTRADICTED:
+            entry["verdict"] = CONTRADICTS_RULES
+        else:
+            entry["verdict"] = _DISPLAY.get(
+                result["verdict"], CANNOT_BE_CONFIRMED)
         trace["claims"].append(entry)
 
     for _c in trace["claims"]:
@@ -661,6 +881,24 @@ def _verifier_display(trace, claim=None):
     return str(label).removeprefix("verifier: ") or "(not configured)"
 
 
+def _verified_by_display(trace, claim=None):
+    """``verified by`` value for ``claim`` (Fix 30)."""
+    claim = claim or {}
+    if claim.get("verified_by"):
+        return str(claim["verified_by"])
+    if claim.get("verifier_model") or trace.get("verifier_model"):
+        return _verifier_display(trace, claim)
+    return RULE_ONLY
+
+
+def _extracted_by_display(trace, claim=None):
+    """``extracted by`` value for ``claim`` (Fix 30)."""
+    claim = claim or {}
+    return str(claim.get("extracted_by")
+               or claim.get("extraction_source")
+               or EXTRACTED_BY_KEYWORD)
+
+
 def format_call_trace(trace, *, color=False, show_transcript=True):
     """Render a call-check trace for the demo CLI."""
     transcript_line = (str(trace.get("transcript") or "")
@@ -680,6 +918,8 @@ def format_call_trace(trace, *, color=False, show_transcript=True):
             claim.get("source_file", "")))
         lines.append("   Quote: %s" % normalise_display_text(
             claim.get("quote", "")))
+        lines.append("   extracted by: %s"
+                     % _extracted_by_display(trace, claim))
     lines += ["", "Stage 3 — Evidence check + verifier (per claim)",
               "-----------------------------------------------"]
     if not claims:
@@ -693,6 +933,10 @@ def format_call_trace(trace, *, color=False, show_transcript=True):
                          evidence.get("exists"), evidence.get("found"),
                          claim.get("verifier_verdict") or "(not run)"))
         lines.append("  Verifier: %s" % _verifier_display(trace, claim))
+        lines.append("  verified by: %s"
+                     % _verified_by_display(trace, claim))
+        lines.append("  extracted by: %s"
+                     % _extracted_by_display(trace, claim))
     lines += ["", "Stage 4 — Per-claim verdicts",
               "----------------------------"]
     if not claims:
@@ -703,6 +947,10 @@ def format_call_trace(trace, *, color=False, show_transcript=True):
             idx, claim.get("verdict_label",
                            claim.get("verdict", ""))))
         lines.append("  Verifier: %s" % _verifier_display(trace, claim))
+        lines.append("  verified by: %s"
+                     % _verified_by_display(trace, claim))
+        lines.append("  extracted by: %s"
+                     % _extracted_by_display(trace, claim))
         lines.append("  %s" % normalise_display_text(
             claim.get("reason") or ""))
     lines += ["", "Final block", "-----------",
