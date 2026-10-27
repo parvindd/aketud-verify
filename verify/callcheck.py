@@ -27,12 +27,12 @@ Bharosa.
 import re
 
 try:
-    from verify.authority import REGISTRY, governing_title
+    from verify.authority import REGISTRY, governing_title, rule_plain
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier)
 except ImportError:  # run as top-level modules (cd verify)
-    from authority import REGISTRY, governing_title
+    from authority import REGISTRY, governing_title, rule_plain
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier)
@@ -274,6 +274,39 @@ def keyword_flagged_claims(transcript, existing_claims):
     return out
 
 
+def _specific_reason(entry, product="unknown"):
+    """Plain rule statement + citation from authority (Fix 21)."""
+    kind = entry.get("kind") or _infer_kind(entry.get("claim"))
+    rule = entry.get("rule")
+    reg = _rule_entry(rule, scope=entry.get("scope")) \
+        if isinstance(rule, int) else None
+    if reg is None and isinstance(rule, int):
+        reg = _rule_entry(rule)
+    citation = entry.get("citation") or (reg or {}).get("citation", "")
+    if kind == "payment_link":
+        plain = ("No verified rule confirms paying through a link "
+                 "sent by a caller.")
+        return plain
+    if kind == "policy_status":
+        return ("Policy existence/status is known only to the "
+                "insurer.")
+    plain = rule_plain(reg, product=product) if reg else ""
+    if kind == "revival_deadline" and product == "unknown":
+        citation = (
+            "IRDAI (Insurance Products) Regulations, 2024, "
+            "Schedule I, 1.39 (non-linked) and 1.28 (linked)")
+    if not plain:
+        plain = "The mapped rule does not establish this claim."
+    if kind == "revival_fee" and product != "linked":
+        plain = ("%s This no-fee rule covers linked products "
+                 "only; product type is %s, so this fee claim "
+                 "cannot be confirmed from the rules."
+                 % (plain, product))
+    if citation:
+        return "%s (%s)" % (plain, citation)
+    return plain
+
+
 def _semantic_verdict(entry):
     """Offline verdict from the mapped rule's verified meaning."""
     kind = entry.get("kind") or _infer_kind(entry.get("claim"))
@@ -378,30 +411,25 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         # Scope guardrails (fail closed, before any verdict display).
         if kind == "payment_link":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = (
-                "No verified rule confirms paying through a link "
-                "sent by a caller.")
+            entry["reason"] = _specific_reason(entry, product)
             trace["claims"].append(entry)
             continue
         if kind == "policy_status":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = (
-                "Policy existence/status is known only to the insurer.")
+            entry["reason"] = _specific_reason(entry, product)
             trace["claims"].append(entry)
             continue
         if kind == "revival_fee" and product != "linked":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = (
-                "Product type is %s; the no-fee rule covers linked "
-                "products only, so this fee claim cannot be confirmed "
-                "from the rules." % product)
+            entry["reason"] = _specific_reason(entry, product)
             trace["claims"].append(entry)
             continue
         if not (evidence["exists"] and evidence["found"]):
             entry["verdict"] = CANNOT_BE_CONFIRMED
             entry["reason"] = (
-                "Evidence check failed (exists=%s, found=%s)."
-                % (evidence["exists"], evidence["found"]))
+                "%s Evidence check failed (exists=%s, found=%s)."
+                % (_specific_reason(entry, product),
+                   evidence["exists"], evidence["found"]))
             trace["claims"].append(entry)
             continue
         source_text = extract_text(entry["source_file"], raw_dir=raw_dir)
@@ -412,7 +440,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             result = _semantic_verdict(entry)
         entry["verifier_verdict"] = result["verdict"]
         entry["verifier_reason"] = result["reason"]
-        entry["reason"] = result["reason"]
+        entry["reason"] = _specific_reason(entry, product)
         entry["verdict"] = _DISPLAY.get(
             result["verdict"], CANNOT_BE_CONFIRMED)
         trace["claims"].append(entry)
@@ -424,6 +452,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     for idx, claim in enumerate(trace["claims"], 1):
         lines.append("Claim %d: %s — %s" % (
             idx, claim["verdict"], claim["claim"]))
+        lines.append("  %s" % (claim.get("reason") or ""))
     trace["final_block"] = "\n".join(lines + [
         "Safety advice: " + SAFETY_ADVICE])
     trace["final_answer"] = trace["final_block"]

@@ -93,6 +93,11 @@ REGISTRY = [
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
             "Schedule I, 1.10"),
+        "plain": (
+            "Revival is done by the insurer, and only after the "
+            "insurer is satisfied about continued insurability "
+            "under its underwriting policy; revival is not "
+            "guaranteed."),
     },
     {
         "rule": 2,
@@ -111,6 +116,9 @@ REGISTRY = [
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
             "Schedule I, 1.28"),
+        "plain": (
+            "Revival period is 3 years (linked) from the first "
+            "unpaid premium."),
     },
     {
         "rule": 2,
@@ -129,6 +137,9 @@ REGISTRY = [
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
             "Schedule I, 1.39"),
+        "plain": (
+            "Revival period is 5 years (non-linked) from the "
+            "first unpaid premium."),
     },
     {
         "rule": 3,
@@ -143,6 +154,10 @@ REGISTRY = [
         "citation": (
             "Master Circular on Life Insurance Products, "
             "12 June 2024, Part C, para 40"),
+        "plain": (
+            "For linked products, the insurer collects all due "
+            "and unpaid premiums without charging any interest "
+            "or fee."),
     },
     {
         "rule": 4,
@@ -160,11 +175,50 @@ REGISTRY = [
         "status_note": (
             "2019 date; status after 2024 consolidation "
             "NOT confirmed"),
+        "plain": (
+            "IRDAI is not involved in selling insurance policies, "
+            "announcing bonus or investment of premiums."),
     },
 ]
 
 # Alias: the registry under a second common name.
 RULES = REGISTRY
+
+
+def rule_entry(rule, scope=None):
+    entries = [r for r in REGISTRY if r.get("rule") == rule]
+    if scope:
+        for entry in entries:
+            if entry.get("scope") == scope:
+                return entry
+    return entries[0] if entries else None
+
+
+def revival_period_plain(product="unknown", lang="en"):
+    """Plain revival-period statement; both periods if unknown."""
+    if product == "linked":
+        return ("Revival period is 3 years (linked) from the "
+                "first unpaid premium.")
+    if product == "non-linked":
+        return ("Revival period is 5 years (non-linked) from "
+                "the first unpaid premium.")
+    return ("Revival period is 5 years (non-linked) or 3 years "
+            "(linked) from the first unpaid premium.")
+
+
+def rule_plain(entry, lang="en", product="unknown"):
+    """Plain-language statement of ``entry``'s rule (Fix 21)."""
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("rule") == 2:
+        # Entry scope decides unless product is unknown, in which
+        # case the entry may be the non-linked default: the claim
+        # is about revival period with unknown product, so state
+        # both periods (handled by callers passing product).
+        if product == "unknown":
+            return revival_period_plain("unknown", lang)
+        return revival_period_plain(product, lang)
+    return entry.get("plain", "")
 
 _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",

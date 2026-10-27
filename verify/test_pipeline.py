@@ -1327,6 +1327,41 @@ class TestCaseDCallCheck(unittest.TestCase):
             self.assertIn(kind, [c["kind"] for c in trace["claims"]],
                           text)
 
+    def test_fix21_specific_reasons_with_citation(self):
+        cc = self._callcheck()
+        trace = cc.check_call(self._FULL_TRANSCRIPT)
+        self.assertEqual(len(trace["claims"]), 4)
+        for claim in trace["claims"]:
+            self.assertNotIn("The mapped rule states the opposite",
+                             claim["reason"])
+            self.assertTrue(claim["citation"] in claim["reason"]
+                            or claim["kind"] == "payment_link",
+                            claim)
+        by_kind = {c["kind"]: c for c in trace["claims"]}
+        self.assertIn("not guaranteed",
+                      by_kind["revival_guaranteed"]["reason"])
+        self.assertIn("1.10", by_kind["revival_guaranteed"]["reason"])
+        self.assertIn("IRDAI is not involved",
+                      by_kind["irdai_calling"]["reason"])
+        self.assertIn("5 years (non-linked) or 3 years (linked) "
+                      "from the first unpaid premium",
+                      by_kind["revival_deadline"]["reason"])
+        self.assertIn("Schedule I",
+                      by_kind["revival_deadline"]["reason"])
+        # Formatted output shows the specific reason too.
+        text = cc.format_call_trace(trace)
+        self.assertIn("5 years (non-linked) or 3 years (linked)",
+                      text)
+
+    def test_fix21_revival_period_known_product(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "ULIP policy hai, revive today or lapse forever")
+        deadline = [c for c in trace["claims"]
+                    if c["kind"] == "revival_deadline"][0]
+        self.assertIn("3 years (linked)", deadline["reason"])
+        self.assertNotIn("5 years (non-linked) or", deadline["reason"])
+
     def test_hinglish_transcript_and_safety_advice_always(self):
         cc = self._callcheck()
         demo = TestDemo()._demo()
