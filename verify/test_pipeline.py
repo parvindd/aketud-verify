@@ -62,6 +62,12 @@ AROGYA_48_QUOTE = (
     "the first policy with us."
 )
 
+AROGYA_30_QUOTE = (
+    "Expenses related to the treatment of any illness within 30 days "
+    "from the first policy commencement date shall be excluded except "
+    "claims arising due to an accident, provided the same are covered."
+)
+
 SUPERSEDING_REASON = (
     "The Arogya Sanjeevani specimen states 48 months, but the IRDAI "
     "(Insurance Products) Regulations, 2024, Schedule III, Regulation 7 "
@@ -399,6 +405,105 @@ class TestPipelineScenarios(unittest.TestCase):
             trace["claims"][0]["governing_verdict"], CONTRADICTED)
         self.assertTrue(
             trace["claims"][0]["governing_evidence"]["found"])
+
+    def _superseded_backend(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": CONTRADICTED,
+                    "reason": "Governing passage caps PED at 36 months."})
+            return json.dumps({
+                "verdict": SUPPORTED,
+                "reason": "The Arogya quote states 48 months."})
+        return backend
+
+    def test_fix14_hindi_claim_arogya48_is_superseded(self):
+        draft = {"claims": [{
+            "claim": "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड "
+                     "48 महीने है",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए प्रतीक्षा अवधि क्या है?",
+            proposer=fake_proposer(draft),
+            verifier=self._superseded_backend())
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"], CONTRADICTED)
+        self.assertIn("36 months", trace["final_answer"])
+
+    def test_fix14_hinglish_claim_arogya48_is_superseded(self):
+        # No English PED keyword and no Devanagari keyword in the
+        # claim/question: only the cited (English) quote touches
+        # the governed topic, yet the governing check must run.
+        draft = {"claims": [{
+            "claim": "Purani bimari ke liye waiting period "
+                     "48 months hai",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "Purani bimari ke liye waiting period kitne months hai?",
+            proposer=fake_proposer(draft),
+            verifier=self._superseded_backend())
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        self.assertEqual(
+            trace["claims"][0]["governing_verdict"], CONTRADICTED)
+
+    def test_fix14_quote_only_topic_triggers_governing(self):
+        # Claim/question carry no topic keyword in any language;
+        # the quote alone (pre-existing/PED) triggers the check.
+        draft = {"claims": [{
+            "claim": "The period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the period?",
+            proposer=fake_proposer(draft),
+            verifier=self._superseded_backend())
+        self.assertEqual(trace["decision"], SUPERSEDED)
+
+    def test_fix14_devanagari_keywords_match_governing(self):
+        try:
+            from verify.authority import governing_for
+        except ImportError:
+            from authority import governing_for
+        for text in ("प्री-एग्ज़िस्टिंग 48 महीने",
+                     "पूर्व-मौजूदा बीमारी 48 महीने",
+                     "पीईडी 48 महीने",
+                     "वेटिंग पीरियड 48 महीने",
+                     "प्रतीक्षा अवधि 48 महीने"):
+            self.assertTrue(governing_for(AROGYA, text=text), text)
+        # Quote-only matching via the governing_for quote argument.
+        self.assertTrue(governing_for(
+            AROGYA, text="कोई जानकारी", quote=AROGYA_48_QUOTE))
+
+    def test_fix14_uncertain_superseded_topic_is_not_verified(self):
+        # Hindi claim citing a superseded source, no topic keyword
+        # in claim/question/quote: fail closed, never VERIFIED.
+        draft = {"claims": [{
+            "claim": "कुछ स्वास्थ्य जानकारी 30 दिन है",
+            "source_file": AROGYA, "quote": AROGYA_30_QUOTE}]}
+        trace = answer(
+            "कुछ स्वास्थ्य जानकारी क्या है?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertNotEqual(trace["decision"], VERIFIED)
+        self.assertEqual(
+            trace["refusal_reason"], REFUSAL_GOVERNING_INSUFFICIENT)
+
+    def test_fix14_english_arogya_nonped_unchanged(self):
+        # Certain English non-PED topic on a superseded source:
+        # no governing rule, no uncertainty, still VERIFIED.
+        draft = {"claims": [{
+            "claim": "Illness treatment within 30 days is excluded "
+                     "except accidents",
+            "source_file": AROGYA, "quote": AROGYA_30_QUOTE}]}
+        trace = answer(
+            "Is illness in the first 30 days excluded?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+        self.assertEqual(trace["decision"], VERIFIED)
 
     def test_c_own_source_contradiction_stays_corrected(self):
         # Both the cited source and the governing passage contradict

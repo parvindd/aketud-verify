@@ -84,11 +84,46 @@ in_force_display = effective_display
 # Topic keywords used to decide whether a governing rule is on-topic
 # for a claim. A superseded source may cover many topics; only a
 # rule whose topic the claim actually touches takes precedence.
+# Matching is language-independent (Fix 14): the cited quote is
+# verbatim source text (always English) and is matched in addition
+# to claim + question, and Devanagari spellings of the governed
+# topic are recognised so a Hindi claim cannot bypass the check.
 _TOPIC_KEYWORDS = {
     "PED waiting period": (
         "ped", "pre-existing", "pre existing", "preexisting",
+        # Devanagari (Fix 14).
+        "प्री-एग्ज़िस्टिंग", "पूर्व-मौजूदा", "पीईडी",
+        "वेटिंग पीरियड", "प्रतीक्षा अवधि",
     ),
 }
+
+# Roman-Hindi (Hinglish) markers: their presence in claim/question
+# means keyword topic detection may miss a governed topic, so for
+# a superseded source detection is uncertain (fail closed).
+_HINGLISH_MARKERS = (
+    "hai", "kya", "mein", "aur", "nahi", "ke liye", "ka", "ki",
+    "ke", "mahine", "bimari", "bimaari", "purani", "pehle",
+    "maujooda", "maujud", "kitne", "baad", "lagti", "hoga",
+)
+
+
+def _contains_devanagari(text):
+    return bool(text) and any(
+        "\u0900" <= ch <= "\u097f" for ch in str(text))
+
+
+def contains_devanagari(text):
+    """True if ``text`` contains any Devanagari character."""
+    return _contains_devanagari(text)
+
+
+def _contains_hinglish_marker(text):
+    if not text:
+        return False
+    lowered = " %s " % str(text).lower()
+    return any(" %s " % marker in lowered
+               or " %s" % marker in lowered
+               for marker in _HINGLISH_MARKERS)
 
 # Human-readable titles for known sources.
 _TITLES = {
@@ -120,31 +155,76 @@ cited_title = source_title
 title_for = source_title
 
 
-def topic_matches(rule, text):
-    """True if ``text`` touches ``rule``'s topic (or topic unknown)."""
+def topic_matches(rule, text=None, quote=None):
+    """True if ``text``/``quote`` touches ``rule``'s topic.
+
+    The cited ``quote`` is verbatim source text (always English),
+    so it is matched in addition to claim + question: a governed
+    topic in the quote triggers the governing check regardless of
+    the claim's language (Fix 14). Unknown topic -> True.
+    """
     keywords = _TOPIC_KEYWORDS.get(rule.get("topic"))
     if not keywords:
         return True
-    if not text:
+    combined = " ".join(
+        str(p) for p in (text, quote) if p)
+    if not combined:
         return False
-    lowered = str(text).lower()
-    return any(k in lowered for k in keywords)
+    lowered = combined.lower()
+    return any(k.lower() in lowered for k in keywords)
 
 
-def governing_for(source_file, text=None):
+def governing_for(source_file, text=None, quote=None):
     """Return governing rules that supersede ``source_file``.
 
-    If ``text`` (claim and/or question) is given, only rules whose
-    topic the text touches are returned.
+    If ``text`` (claim and/or question) and/or ``quote`` (the
+    cited verbatim quote) is given, only rules whose topic that
+    combined text touches are returned.
     """
     out = []
     for rule in REGISTRY:
         if source_file not in rule.get("supersedes", []):
             continue
-        if text is not None and not topic_matches(rule, text):
+        if (text is not None or quote is not None) and not topic_matches(
+                rule, text, quote=quote):
             continue
         out.append(rule)
     return out
+
+
+def is_superseded_source(source_file):
+    """True if any rule supersedes ``source_file`` (any topic)."""
+    return bool(governing_for(source_file))
+
+
+def topic_detection_uncertain(source_file, claim=None, question=None,
+                              quote=None, lang=None):
+    """True when a superseded source's topic cannot be ruled out.
+
+    Uncertain when no governing rule matched on claim+question+
+    quote, yet the claim/question is in Hindi/Hinglish (``lang``
+    is hi/hinglish, Devanagari is present, or Roman-Hindi markers
+    are present) or no text was supplied at all. Pure-English
+    claim/question/quote with no topic keyword is a certain
+    non-match. Callers must fail closed (never VERIFY) when this
+    is True for a superseded source (Fix 14).
+    """
+    if not is_superseded_source(source_file):
+        return False
+    if governing_for(source_file, text=" ".join(
+            str(p) for p in (claim, question) if p), quote=quote):
+        return False
+    combined_claim_question = " ".join(
+        str(p) for p in (claim, question) if p)
+    if not combined_claim_question and not quote:
+        return True
+    if lang and str(lang).lower() in ("hi", "hinglish", "hindi"):
+        return True
+    if _contains_devanagari(combined_claim_question):
+        return True
+    if _contains_hinglish_marker(combined_claim_question):
+        return True
+    return False
 
 
 # Aliases for discoverability.

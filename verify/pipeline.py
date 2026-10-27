@@ -49,13 +49,15 @@ import re
 try:
     from verify.authority import (REGISTRY, effective_display,
                                   governing_for, governing_title,
-                                  source_title)
+                                  source_title,
+                                  topic_detection_uncertain)
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend)
 except ImportError:  # run as top-level modules (cd verify; unittest)
     from authority import (REGISTRY, effective_display, governing_for,
-                           governing_title, source_title)
+                           governing_title, source_title,
+                           topic_detection_uncertain)
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend)
@@ -429,9 +431,27 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
         # INSUFFICIENT_EVIDENCE (including malformed/failed verifier
         # output, which fails closed to INSUFFICIENT_EVIDENCE) is a
         # refusal, and the superseded source's verdict is never used.
+        # Language-independent topic matching (Fix 14): the cited
+        # quote (verbatim English source text) is matched in
+        # addition to claim + question, so a Hindi/Hinglish claim
+        # citing a superseded source cannot bypass this check.
         governing_rules = governing_for(
             item["source_file"],
-            text=item["claim"] + " " + str(question))
+            text=item["claim"] + " " + str(question),
+            quote=item["quote"])
+        governing_uncertain = False
+        if not governing_rules and topic_detection_uncertain(
+                item["source_file"], claim=item["claim"],
+                question=str(question), quote=item["quote"],
+                lang=lang):
+            # Fail closed: superseded source, topic uncertain.
+            governing_uncertain = True
+            entry["governing_verdict"] = INSUFFICIENT_EVIDENCE
+            entry["governing_reason"] = (
+                "Topic detection uncertain for a superseded "
+                "source; failing closed.")
+            entry["refusal_reason"] = REFUSAL_GOVERNING_INSUFFICIENT
+            _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
         governing_contradicted = False
         governing_failed = False
         governing_supported = False
@@ -513,6 +533,8 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 entry["refusal_reason"] = (
                     REFUSAL_GOVERNING_INSUFFICIENT)
                 _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
+        elif governing_uncertain:
+            pass  # refusal already noted above; never VERIFY
         elif result["verdict"] == CONTRADICTED:
             has_contradicted = True
             corrected_records.append({
