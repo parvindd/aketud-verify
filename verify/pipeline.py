@@ -89,6 +89,70 @@ _REFUSAL_DETAILS = {
 }
 
 
+_LANG_ALIASES = {
+    "en": "en", "english": "en", "hi": "hi", "hindi": "hi",
+    "hinglish": "hinglish",
+}
+
+_REFUSAL_TEMPLATES = {
+    "hi": (
+        "मैं इसकी पुष्टि मेरे पास मौजूद आधिकारिक दस्तावेज़ों से "
+        "नहीं कर सकता।",
+        {
+            REFUSAL_NO_API_KEY: "कोई API कुंजी कॉन्फ़िगर नहीं है।",
+            REFUSAL_PROPOSER_ERROR: "ड्राफ़्ट जनरेटर विफल रहा।",
+            REFUSAL_NO_CLAIMS: (
+                "ड्राफ़्ट में सत्यापित करने के लिए कोई दावा नहीं था।"),
+            REFUSAL_EVIDENCE_NOT_FOUND: (
+                "उद्धृत साक्ष्य आधिकारिक दस्तावेज़ों में नहीं मिला।"),
+            REFUSAL_VERIFIER_INSUFFICIENT: (
+                "सत्यापनकर्ता उद्धृत अंश से दावे की पुष्टि नहीं "
+                "कर सका।"),
+            REFUSAL_GOVERNING_INSUFFICIENT: (
+                "शासी दस्तावेज़ दावे की पुष्टि नहीं कर सका।"),
+        },
+    ),
+    "hinglish": (
+        "Main iski confirmation apne paas maujood official "
+        "documents se nahi kar sakta.",
+        {
+            REFUSAL_NO_API_KEY: "Koi API key configured nahi hai.",
+            REFUSAL_PROPOSER_ERROR: "Draft generator fail ho gaya.",
+            REFUSAL_NO_CLAIMS: (
+                "Draft mein verify karne ke liye koi claim nahi tha."),
+            REFUSAL_EVIDENCE_NOT_FOUND: (
+                "Cited evidence official documents mein nahi mila."),
+            REFUSAL_VERIFIER_INSUFFICIENT: (
+                "Verifier cited passage se claim confirm nahi "
+                "kar saka."),
+            REFUSAL_GOVERNING_INSUFFICIENT: (
+                "Governing document claim confirm nahi kar saka."),
+        },
+    ),
+}
+
+
+def _contains_devanagari(text):
+    return bool(text) and any(
+        "\u0900" <= ch <= "\u097f" for ch in str(text))
+
+
+def detect_lang(text):
+    """Auto-detect: Devanagari text -> ``hi``, else ``en``."""
+    return "hi" if _contains_devanagari(text) else "en"
+
+
+def normalize_lang(lang=None, text=None):
+    """Normalise ``lang`` to en|hi|hinglish (auto-detect if unset)."""
+    if lang is None or (isinstance(lang, str)
+                        and lang.strip().lower() in ("", "auto")):
+        return detect_lang(text)
+    return _LANG_ALIASES.get(str(lang).strip().lower(), "en")
+
+
+# Alias for discoverability.
+resolve_lang = normalize_lang
+
 _VALUE_RE = re.compile(r"(\d+\s*(?:months?|days?|years?))", re.I)
 
 
@@ -100,41 +164,130 @@ def _extract_value(text):
     return " ".join(match.group(1).split()) if match else None
 
 
-def _build_verified(entries):
-    return " ".join(
-        "%s (Source: %s)" % (e["claim"], e["source_file"])
-        for e in entries)
+def _is_ped_text(*texts):
+    combined = " ".join(str(t) for t in texts if t).lower()
+    return any(k in combined for k in (
+        "ped", "pre-existing", "pre existing", "preexisting",
+        "प्री-एग्ज़िस्टिंग", "पूर्व-मौजूदा", "पीईडी"))
 
 
-def _build_superseded(records):
+def _build_verified(entries, lang="en"):
+    """Fixed-template verified answer (Fix 15).
+
+    English keeps claim + source. Hindi/Hinglish PED answers use a
+    fixed template (never model text for the final sentence);
+    English insurance terms are Devanagari in Hindi and Roman in
+    Hinglish, while the citation stays in English.
+    """
+    if lang not in ("hi", "hinglish"):
+        return " ".join(
+            "%s (Source: %s)" % (e["claim"], e["source_file"])
+            for e in entries)
+    parts = []
+    for e in entries:
+        value = (_extract_value(e.get("quote"))
+                 or _extract_value(e.get("claim")))
+        if value and _is_ped_text(e.get("claim"), e.get("quote")):
+            if lang == "hi":
+                parts.append(
+                    "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड "
+                    "अधिकतम %s है। (Source: %s)"
+                    % (value, e["source_file"]))
+            else:
+                parts.append(
+                    "Pre-existing disease ke liye waiting period "
+                    "maximum %s hai. (Source: %s)"
+                    % (value, e["source_file"]))
+        elif lang == "hi":
+            parts.append(
+                "सत्यापित: %s (Source: %s)"
+                % (e["claim"], e["source_file"]))
+        else:
+            parts.append(
+                "Verified: %s (Source: %s)"
+                % (e["claim"], e["source_file"]))
+    return " ".join(parts)
+
+
+def _build_superseded(records, lang="en"):
     parts = []
     for rec in records:
-        sentence = (
-            "Current rule: maximum %s (%s). %s still says %s, "
-            "but the 2024 regulation overrides it."
-            % (rec["governing_value"], rec["governing_title"],
-               rec["cited_title"], rec["cited_value"]))
+        if lang == "hi":
+            sentence = (
+                "वर्तमान नियम: प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए "
+                "वेटिंग पीरियड अधिकतम %s है (%s)। %s में अभी भी "
+                "%s कहा गया है, लेकिन आईआरडीएआई का 2024 नियम इसे "
+                "रद्द करता है."
+                % (rec["governing_value"], rec["governing_title"],
+                   rec["cited_title"], rec["cited_value"]))
+        elif lang == "hinglish":
+            sentence = (
+                "Ab ka rule: Pre-existing disease ke liye waiting "
+                "period maximum %s hai (%s). %s mein abhi bhi %s "
+                "hai, lekin IRDAI ka 2024 regulation ise override "
+                "karta hai."
+                % (rec["governing_value"], rec["governing_title"],
+                   rec["cited_title"], rec["cited_value"]))
+        else:
+            sentence = (
+                "Current rule: maximum %s (%s). %s still says %s, "
+                "but the 2024 regulation overrides it."
+                % (rec["governing_value"], rec["governing_title"],
+                   rec["cited_title"], rec["cited_value"]))
         parts.append(sentence + "\n" + rec["governing_quote"])
     return "\n".join(parts)
 
 
-def _build_corrected(records):
+def _build_corrected(records, lang="en"):
     parts = []
     for rec in records:
         if rec.get("governing_quote"):
-            parts.append(
-                "The governing source (%s) says the maximum is %s."
-                "\n%s" % (rec["governing_title"],
-                          rec["governing_value"],
-                          rec["governing_quote"]))
+            if lang == "hi":
+                parts.append(
+                    "वेटिंग पीरियड के लिए शासी स्रोत (%s) के अनुसार "
+                    "अधिकतम %s है।\n%s" % (
+                        rec["governing_title"],
+                        rec["governing_value"],
+                        rec["governing_quote"]))
+            elif lang == "hinglish":
+                parts.append(
+                    "Waiting period ke liye governing source (%s) "
+                    "ke anusar maximum %s hai.\n%s" % (
+                        rec["governing_title"],
+                        rec["governing_value"],
+                        rec["governing_quote"]))
+            else:
+                parts.append(
+                    "The governing source (%s) says the maximum is %s."
+                    "\n%s" % (rec["governing_title"],
+                              rec["governing_value"],
+                              rec["governing_quote"]))
         elif rec.get("value"):
-            parts.append(
-                "The cited source (%s) says the maximum is %s.\n%s"
-                % (rec["cited_title"], rec["value"], rec["quote"]))
+            if lang == "hi":
+                parts.append(
+                    "उद्धृत स्रोत (%s) के अनुसार अधिकतम %s है।\n%s"
+                    % (rec["cited_title"], rec["value"], rec["quote"]))
+            elif lang == "hinglish":
+                parts.append(
+                    "Cited source (%s) ke anusar maximum %s hai.\n%s"
+                    % (rec["cited_title"], rec["value"], rec["quote"]))
+            else:
+                parts.append(
+                    "The cited source (%s) says the maximum is %s.\n%s"
+                    % (rec["cited_title"], rec["value"], rec["quote"]))
         else:
-            parts.append(
-                "The cited source (%s) says:\n%s"
-                % (rec["cited_title"], rec["quote"]))
+            if lang == "hi":
+                parts.append(
+                    "उद्धृत स्रोत (%s) कहता है:\n%s"
+                    % (rec["cited_title"], rec["quote"]))
+            elif lang == "hinglish":
+                parts.append(
+                    "Cited source (%s) kehta hai:\n%s"
+                    % (rec["cited_title"], rec["quote"]))
+            else:
+                parts.append(
+                    "The cited source (%s) says:\n%s"
+                    % (rec["cited_title"], rec["quote"]))
     return "\n".join(parts)
 
 
@@ -142,16 +295,27 @@ def _refuse(trace, reason, detail=None, exc=None):
     """Finalise ``trace`` as REFUSED with a reason and message."""
     trace["decision"] = REFUSED
     trace["refusal_reason"] = reason
-    detail = detail or _REFUSAL_DETAILS.get(
-        reason, "The claim could not be verified.")
-    detail = " ".join(str(detail).split())
-    trace["refusal_detail"] = detail
+    lang = normalize_lang(trace.get("lang"), trace.get("question"))
+    trace["lang"] = lang
+    if lang in _REFUSAL_TEMPLATES:
+        prefix, details = _REFUSAL_TEMPLATES[lang]
+        # Fixed template in the user's language (Fix 15), not the
+        # English detail that may have been passed in.
+        detail_text = details.get(
+            reason, "दावे की पुष्टि नहीं हो सकी।"
+            if lang == "hi" else "Claim confirm nahi ho saka.")
+    else:
+        prefix = REFUSAL_PREFIX
+        detail_text = detail or _REFUSAL_DETAILS.get(
+            reason, "The claim could not be verified.")
+    detail_text = " ".join(str(detail_text).split())
+    trace["refusal_detail"] = detail_text
     if exc is not None:
         trace["exception_type"] = type(exc).__name__
         trace["error_type"] = type(exc).__name__
         trace["exception"] = str(exc)
     trace["correction"] = None
-    trace["final_answer"] = REFUSAL_PREFIX + " " + detail
+    trace["final_answer"] = prefix + " " + detail_text
     return trace
 
 _PROPOSER_PROMPT = (
@@ -334,7 +498,7 @@ def _normalise_draft(draft):
     return normalised
 
 
-def answer(question, lang="en", *, proposer=None, verifier=None,
+def answer(question, lang=None, *, proposer=None, verifier=None,
            raw_dir=None):
     """Answer ``question`` fail-closed; return the full trace.
 
@@ -345,6 +509,7 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
     correction}`` where each claim entry carries its evidence result
     and verdict.
     """
+    lang = normalize_lang(lang, question)
     trace = {"question": question, "lang": lang, "draft": None,
              "claims": [], "decision": REFUSED, "final_answer": None,
              "correction": None, "refusal_reason": None,
@@ -553,16 +718,16 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
             detail=refusal_detail)
     elif has_superseded:
         trace["decision"] = SUPERSEDED
-        parts = [_build_superseded(superseded_records)]
+        parts = [_build_superseded(superseded_records, lang)]
         if corrected_records:
-            parts.append(_build_corrected(corrected_records))
+            parts.append(_build_corrected(corrected_records, lang))
         trace["correction"] = "\n".join(p for p in parts if p)
         trace["final_answer"] = trace["correction"]
     elif has_contradicted:
         trace["decision"] = CORRECTED
-        trace["correction"] = _build_corrected(corrected_records)
+        trace["correction"] = _build_corrected(corrected_records, lang)
         trace["final_answer"] = trace["correction"]
     else:
         trace["decision"] = VERIFIED
-        trace["final_answer"] = _build_verified(trace["claims"])
+        trace["final_answer"] = _build_verified(trace["claims"], lang)
     return trace

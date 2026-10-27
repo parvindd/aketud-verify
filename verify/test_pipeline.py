@@ -713,6 +713,127 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertEqual(trace["exception_type"], "RuntimeError")
 
 
+class TestAnswerLanguage(unittest.TestCase):
+    def _a_draft(self):
+        return {"claims": [{
+            "claim": "The PED waiting period is maximum up to 36 "
+                     "months of continuous coverage.",
+            "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+
+    def _c_draft(self):
+        return {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+
+    def _c_backend(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": CONTRADICTED,
+                    "reason": "Governing passage caps PED at 36 months."})
+            return json.dumps({
+                "verdict": SUPPORTED, "reason": "Arogya says 48."})
+        return backend
+
+    def test_fix15_a_hi_verified_template(self):
+        trace = answer(
+            "अधिकतम प्रतीक्षा अवधि क्या है?", lang="hi",
+            proposer=fake_proposer(self._a_draft()),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(trace["lang"], "hi")
+        self.assertEqual(
+            trace["final_answer"],
+            "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड अधिकतम "
+            "36 months है। (Source: "
+            "irdai-insurance-products-regulations-2024.pdf)")
+        self.assertIn("वेटिंग पीरियड", trace["final_answer"])
+        self.assertIn("36 months", trace["final_answer"])
+
+    def test_fix15_a_hinglish_verified_template(self):
+        trace = answer(
+            "Maximum waiting period kitna hai?", lang="hinglish",
+            proposer=fake_proposer(self._a_draft()),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(
+            trace["final_answer"],
+            "Pre-existing disease ke liye waiting period maximum "
+            "36 months hai. (Source: "
+            "irdai-insurance-products-regulations-2024.pdf)")
+        self.assertNotIn("वेटिंग", trace["final_answer"])
+
+    def test_fix15_b_hi_refused(self):
+        draft = {"claims": [{
+            "claim": "Maternity cover has a 9-month waiting period.",
+            "source_file": PRODUCTS,
+            "quote": "Maternity benefits shall be payable after nine "
+                     "months of continuous coverage."}]}
+        trace = answer(
+            "Maternity waiting period क्या है?", lang="hi",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "x"}))
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertTrue(trace["final_answer"].startswith(
+            "मैं इसकी पुष्टि"))
+        self.assertIn("उद्धृत साक्ष्य", trace["final_answer"])
+        self.assertNotIn(REFUSAL_PREFIX, trace["final_answer"])
+
+    def test_fix15_b_hinglish_refused(self):
+        draft = {"claims": [{
+            "claim": "Maternity cover has a 9-month waiting period.",
+            "source_file": PRODUCTS,
+            "quote": "Maternity benefits shall be payable after nine "
+                     "months of continuous coverage."}]}
+        trace = answer(
+            "Maternity waiting period kitna hai?", lang="hinglish",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "x"}))
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertTrue(trace["final_answer"].startswith("Main iski"))
+        self.assertIn(
+            "Cited evidence official documents mein nahi mila.",
+            trace["final_answer"])
+        self.assertNotIn(REFUSAL_PREFIX, trace["final_answer"])
+
+    def test_fix15_c_hi_superseded(self):
+        trace = answer(
+            "प्रतीक्षा अवधि क्या है?", lang="hi",
+            proposer=fake_proposer(self._c_draft()),
+            verifier=self._c_backend())
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        msg = trace["final_answer"]
+        self.assertIn("वेटिंग पीरियड", msg)
+        self.assertIn("प्री-एग्ज़िस्टिंग डिज़ीज़", msg)
+        self.assertIn("आईआरडीएआई", msg)
+        self.assertIn("36 months", msg)
+        self.assertIn("48 months", msg)
+        self.assertIn(PED_QUOTE, msg)  # quote stays English
+        self.assertIn(
+            "IRDAI (Insurance Products) Regulations, 2024", msg)
+        self.assertNotIn("Current rule:", msg)
+
+    def test_fix15_c_hinglish_superseded(self):
+        trace = answer(
+            "Waiting period kitna hai?", lang="hinglish",
+            proposer=fake_proposer(self._c_draft()),
+            verifier=self._c_backend())
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        msg = trace["final_answer"]
+        self.assertIn("waiting period", msg)
+        self.assertIn("Pre-existing disease", msg)
+        self.assertIn("IRDAI", msg)
+        self.assertIn("36 months", msg)
+        self.assertIn("48 months", msg)
+        self.assertIn(PED_QUOTE, msg)
+        self.assertNotIn("वेटिंग पीरियड", msg)
+        self.assertNotIn("Current rule: maximum", msg)
+
+
 class TestRefusalReasons(unittest.TestCase):
     def assert_refused(self, trace, reason):
         self.assertEqual(trace["decision"], REFUSED)
@@ -948,6 +1069,42 @@ class TestDemo(unittest.TestCase):
         self.assertIn("Muse Spark draft", out)
         self.assertIn("VERIFIED", out)
         self.assertEqual(demo.main([], stream=io.StringIO()), 2)
+
+    def test_main_lang_flag_and_autodetect(self):
+        demo = self._demo()
+        trace = self._verified_trace()
+        try:
+            import verify.pipeline as pipeline_mod
+        except ImportError:
+            import pipeline as pipeline_mod
+        captured = {}
+
+        def fake_answer(question, lang=None):
+            captured["question"] = question
+            captured["lang"] = lang
+            return trace
+
+        with mock.patch.object(pipeline_mod, "answer", fake_answer):
+            self.assertEqual(demo.main(
+                ["--lang", "hinglish", "Waiting period kitna hai?"],
+                stream=io.StringIO()), 0)
+            self.assertEqual(captured["lang"], "hinglish")
+            self.assertEqual(
+                captured["question"], "Waiting period kitna hai?")
+            self.assertEqual(demo.main(
+                ["--lang=hi", "प्रतीक्षा अवधि क्या है?"],
+                stream=io.StringIO()), 0)
+            self.assertEqual(captured["lang"], "hi")
+            # No --lang: Devanagari question auto-detects to hi.
+            self.assertEqual(demo.main(
+                ["प्रतीक्षा अवधि क्या है?"], stream=io.StringIO()), 0)
+            self.assertEqual(captured["lang"], "hi")
+            self.assertEqual(demo.main(
+                ["What is it?"], stream=io.StringIO()), 0)
+            self.assertEqual(captured["lang"], "en")
+        self.assertEqual(
+            demo.main(["--lang", "fr", "Bonjour?"],
+                      stream=io.StringIO()), 2)
 
 
 if __name__ == "__main__":

@@ -20,11 +20,25 @@ import sys
 from pathlib import Path
 
 try:
-    from verify.authority import effective_display
+    from verify.authority import contains_devanagari, effective_display
     from verify.pipeline import answer as _pipeline_answer
 except ImportError:  # run as top-level module (cd verify)
-    from authority import effective_display
+    from authority import contains_devanagari, effective_display
     from pipeline import answer as _pipeline_answer
+
+_LANGS = ("en", "hi", "hinglish")
+
+
+def detect_lang(text):
+    """Auto-detect language: Devanagari -> hi, else en (Fix 15)."""
+    return "hi" if contains_devanagari(text) else "en"
+
+
+def resolve_lang(lang, question):
+    """Resolve --lang; auto-detect Devanagari -> hi if not given."""
+    if lang is None:
+        return detect_lang(question)
+    return lang
 
 _RESET = "\033[0m"
 _DIM = "\033[2m"
@@ -251,18 +265,46 @@ def main(argv=None, stream=None):
     stream = stream if stream is not None else sys.stdout
     raw = "--raw" in args
     args = [a for a in args if a != "--raw"]
+    lang = None
+    filtered = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--lang":
+            if idx + 1 >= len(args):
+                print('Usage: python -m verify.demo [--raw] '
+                      '[--lang en|hi|hinglish] "<question>"',
+                      file=sys.stderr)
+                return 2
+            lang = args[idx + 1]
+            idx += 2
+            continue
+        if arg.startswith("--lang="):
+            lang = arg[len("--lang="):]
+            idx += 1
+            continue
+        filtered.append(arg)
+        idx += 1
+    args = filtered
+    if lang is not None and lang not in _LANGS:
+        print('Usage: python -m verify.demo [--raw] '
+              '[--lang en|hi|hinglish] "<question>"',
+              file=sys.stderr)
+        return 2
     if not args or not " ".join(args).strip():
-        print('Usage: python -m verify.demo [--raw] "<question>"',
+        print('Usage: python -m verify.demo [--raw] '
+              '[--lang en|hi|hinglish] "<question>"',
               file=sys.stderr)
         return 2
     question = " ".join(args).strip()
+    lang = resolve_lang(lang, question)
     load_env()
     # Import here so .env is loaded before any default model call.
     try:
         from verify.pipeline import answer
     except ImportError:
         from pipeline import answer
-    trace = answer(question)
+    trace = answer(question, lang=lang)
     print(format_trace(trace, color=supports_color(stream), raw=raw),
           file=stream)
     return 0
