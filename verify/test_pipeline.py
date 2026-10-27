@@ -1162,5 +1162,169 @@ class TestDemo(unittest.TestCase):
                       stream=io.StringIO()), 2)
 
 
+class TestCaseDCallCheck(unittest.TestCase):
+    """Case D fake revival-call tests (Fix 19, offline)."""
+
+    def _callcheck(self):
+        try:
+            import verify.callcheck as callcheck
+        except ImportError:
+            import callcheck
+        return callcheck
+
+    # Hinglish fake-call transcript; no insurer is named.
+    _HINGLISH = (
+        "Namaste, main IRDAI se bol raha hoon, aapke bonus ke "
+        "baare mein call hai. Aaj hi revive karo warna policy "
+        "hamesha ke liye lapse ho jayegi. Revive today or lapse "
+        "forever. Abhi ₹2,000 revival fee pay karo.")
+
+    def test_revive_today_or_lapse_forever_contradicts(self):
+        cc = self._callcheck()
+        for transcript, years in (
+                ("Revive today or lapse forever, jaldi karo",
+                 "five consecutive"),
+                ("ULIP policy hai, revive today or lapse forever",
+                 "three consecutive")):
+            trace = cc.check_call(transcript, lang="hinglish")
+            deadline = [c for c in trace["claims"]
+                        if c["kind"] == "revival_deadline"]
+            self.assertEqual(len(deadline), 1, transcript)
+            self.assertEqual(deadline[0]["verdict"],
+                             cc.CONTRADICTS_RULES)
+            self.assertEqual(deadline[0]["rule"], 2)
+            self.assertIn(years, deadline[0]["quote"])
+            self.assertTrue(deadline[0]["evidence"]["found"])
+
+    def test_irdai_calling_about_bonus_contradicts(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "IRDAI is calling about your bonus, claim karo abhi",
+            lang="hinglish")
+        claims = [c for c in trace["claims"]
+                  if c["kind"] == "irdai_calling"]
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["verdict"], cc.CONTRADICTS_RULES)
+        self.assertEqual(claims[0]["rule"], 4)
+        self.assertIn("is not involved in activities like selling",
+                      claims[0]["quote"])
+        self.assertTrue(claims[0]["evidence"]["found"])
+
+    def test_revival_fee_unknown_product_cannot_be_confirmed(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "Pay ₹2,000 revival fee abhi, policy revive ho jayegi",
+            lang="hinglish")
+        fees = [c for c in trace["claims"]
+                if c["kind"] == "revival_fee"]
+        self.assertEqual(len(fees), 1)
+        self.assertEqual(trace["product_type"], "unknown")
+        self.assertEqual(fees[0]["verdict"], cc.CANNOT_BE_CONFIRMED)
+        self.assertNotEqual(fees[0]["verdict"], cc.CONTRADICTS_RULES)
+
+    def test_revival_fee_nonlinked_cannot_be_confirmed(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "Non-linked policy ke liye ₹2,000 revival fee pay karo",
+            lang="hinglish")
+        fees = [c for c in trace["claims"]
+                if c["kind"] == "revival_fee"]
+        self.assertEqual(len(fees), 1)
+        self.assertEqual(trace["product_type"], "non-linked")
+        self.assertEqual(fees[0]["verdict"], cc.CANNOT_BE_CONFIRMED)
+
+    def test_revival_fee_ulip_contradicts(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "Pay ₹2,000 revival fee for your ULIP policy",
+            lang="hinglish")
+        fees = [c for c in trace["claims"]
+                if c["kind"] == "revival_fee"]
+        self.assertEqual(len(fees), 1)
+        self.assertEqual(trace["product_type"], "linked")
+        self.assertEqual(fees[0]["verdict"], cc.CONTRADICTS_RULES)
+        self.assertEqual(fees[0]["rule"], 3)
+        self.assertEqual(fees[0]["scope"], "linked products only")
+        self.assertIn("without charging any interest or fee",
+                      fees[0]["quote"])
+        self.assertTrue(fees[0]["evidence"]["found"])
+
+    def test_fee_unknown_never_supported_even_if_verifier_supports(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            "Pay ₹2,000 revival fee abhi",
+            proposer=lambda t, lang: {"claims": [{
+                "claim": "Caller claims a revival fee must be paid",
+                "kind": "revival_fee", "rule": 3,
+                "source_file": "mc-life-insurance-products-2024.pdf",
+                "quote": "shall collect all due and unpaid premiums "
+                         "without charging any interest or fee"}]},
+            verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "should not win"}))
+        self.assertEqual(trace["claims"][0]["verdict"],
+                         cc.CANNOT_BE_CONFIRMED)
+
+    def test_injected_proposer_and_verifier_are_used(self):
+        cc = self._callcheck()
+        try:
+            from verify.authority import REGISTRY
+        except ImportError:
+            from authority import REGISTRY
+        rule4 = [r for r in REGISTRY if r.get("rule") == 4][0]
+        trace = cc.check_call(
+            "kuch call aaya tha",
+            proposer=lambda t, lang: {"claims": [{
+                "claim": "Caller claims IRDAI is calling about "
+                         "your bonus",
+                "kind": "irdai_calling", "rule": 4,
+                "source_file": rule4["source_file"],
+                "quote": rule4["quote"]}]},
+            verifier=fake_backend(
+                {"verdict": CONTRADICTED, "reason": "Rule 4."}))
+        self.assertEqual(trace["claims"][0]["verdict"],
+                         cc.CONTRADICTS_RULES)
+        self.assertEqual(trace["claims"][0]["verifier_verdict"],
+                         CONTRADICTED)
+        self.assertTrue(trace["claims"][0]["evidence"]["found"])
+
+    def test_hinglish_transcript_and_safety_advice_always(self):
+        cc = self._callcheck()
+        demo = TestDemo()._demo()
+        transcripts = [
+            self._HINGLISH,
+            "Revive today or lapse forever",
+            "IRDAI is calling about your bonus",
+            "Pay ₹2,000 revival fee abhi",
+            "Pay ₹2,000 revival fee for your ULIP policy",
+            "Hello, kaise ho aap",
+        ]
+        for transcript in transcripts:
+            trace = cc.check_call(transcript, lang="hinglish")
+            self.assertTrue(
+                trace["final_block"].endswith(cc.SAFETY_ADVICE),
+                transcript)
+            self.assertIn("Safety advice:", trace["final_block"])
+            # Never states whether a policy exists.
+            self.assertIn("We cannot see your policy",
+                          trace["final_block"])
+            text = cc.format_call_trace(trace)
+            self.assertTrue(text.rstrip().endswith(cc.SAFETY_ADVICE))
+        # Combined Hinglish call: all three verdict kinds appear.
+        trace = cc.check_call(self._HINGLISH, lang="hinglish")
+        verdicts = [c["verdict"] for c in trace["claims"]]
+        self.assertIn(cc.CONTRADICTS_RULES, verdicts)
+        self.assertIn(cc.CANNOT_BE_CONFIRMED, verdicts)
+        # Demo --call mode prints the same final block.
+        stream = io.StringIO()
+        self.assertEqual(
+            demo.main(["--call", self._HINGLISH, "--lang", "hinglish"],
+                      stream=stream), 0)
+        out = stream.getvalue()
+        self.assertIn("Caller claims", out)
+        self.assertIn("CONTRADICTS RULES", out)
+        self.assertIn("CANNOT BE CONFIRMED (ask insurer)", out)
+        self.assertTrue(out.rstrip().endswith(cc.SAFETY_ADVICE))
+
+
 if __name__ == "__main__":
     unittest.main()
