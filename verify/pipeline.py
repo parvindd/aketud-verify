@@ -36,11 +36,16 @@ verified. A ``REFUSED`` result carries no verified answer text; its
 ``final_answer`` is the refusal message described above.
 
 The proposer and verifier are injectable callables so tests run
-offline with mocks. The default proposer/verifier read
-``META_API_KEY`` and model ids (``PROPOSER_MODEL`` /
-``VERIFIER_MODEL``, plus ``META_API_BASE_URL``) from the environment;
-no secret or model id is hard-coded, and no real model is called
-unless those are set and the defaults are used.
+offline with mocks. The default proposer reads ``META_API_KEY``,
+``PROPOSER_MODEL`` and ``META_API_BASE_URL``. The default verifier
+reads its own env (``VERIFIER_BASE_URL`` / ``VERIFIER_API_KEY`` /
+``VERIFIER_MODEL``, Muse Spark Open on Modal) and falls back to
+the Meta Model API verifier when ``VERIFIER_*`` are unset; the
+trace then says ``verifier: muse-spark-1.3 (fallback)`` (Fix 27).
+No real model is called unless the env is set and the defaults
+are used. Every trace carries ``verifier`` (label), ``verifier_model``
+and ``verifier_fallback``, mirrored per claim, plus the verifier
+response ``usage``/latency when a live backend recorded them.
 """
 import json
 import os
@@ -53,14 +58,16 @@ try:
                                   topic_detection_uncertain)
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
-                                 SUPPORTED, Verifier, make_model_backend)
+                                 SUPPORTED, Verifier, make_model_backend,
+                                 verifier_label)
 except ImportError:  # run as top-level modules (cd verify; unittest)
     from authority import (REGISTRY, effective_display, governing_for,
                            governing_title, source_title,
                            topic_detection_uncertain)
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
-                          SUPPORTED, Verifier, make_model_backend)
+                          SUPPORTED, Verifier, make_model_backend,
+                          verifier_label)
 
 VERIFIED = "VERIFIED"
 REFUSED = "REFUSED"
@@ -521,11 +528,18 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     and verdict.
     """
     lang = normalize_lang(lang, question)
+    try:
+        _default_verifier_label = verifier_label()
+    except Exception:
+        _default_verifier_label = "verifier: (not configured)"
     trace = {"question": question, "lang": lang, "draft": None,
              "claims": [], "decision": REFUSED, "final_answer": None,
              "correction": None, "refusal_reason": None,
              "refusal_detail": None, "exception_type": None,
-             "error_type": None}
+             "error_type": None,
+             "verifier": _default_verifier_label,
+             "verifier_model": None, "verifier_fallback": None,
+             "verifier_usage": None, "verifier_latency_s": None}
     if question is None or not str(question).strip():
         return _refuse(trace, REFUSAL_NO_CLAIMS)
     if proposer is None:
@@ -543,6 +557,10 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
             verifier = Verifier(None)
     elif not isinstance(verifier, Verifier):
         verifier = Verifier(verifier)
+    # Which model verified (Fix 27): label/model/fallback in trace.
+    trace["verifier"] = verifier.label
+    trace["verifier_model"] = verifier.model
+    trace["verifier_fallback"] = verifier.fallback
 
     try:
         draft = proposer(question, lang)
@@ -573,6 +591,12 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                  "quote": item["quote"],
                  "evidence": None, "verdict": None, "reason": None,
                  "verifier_verdict": None, "verifier_reason": None,
+                 "verifier": trace["verifier"],
+                 "verifier_model": trace["verifier_model"],
+                 "verifier_fallback": trace["verifier_fallback"],
+                 "verifier_usage": None, "verifier_latency_s": None,
+                 "governing_verifier_usage": None,
+                 "governing_verifier_latency_s": None,
                  "governing_verdict": None, "governing_reason": None,
                  "cited_value": _extract_value(item["quote"])
                  or _extract_value(item["claim"]),
@@ -600,6 +624,11 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         entry["verifier_verdict"] = result["verdict"]
         entry["reason"] = result["reason"]
         entry["verifier_reason"] = result["reason"]
+        entry["verifier_usage"] = verifier.last_usage
+        entry["verifier_latency_s"] = verifier.last_latency_s
+        entry["verifier_response_model"] = verifier.last_response_model
+        trace["verifier_usage"] = verifier.last_usage
+        trace["verifier_latency_s"] = verifier.last_latency_s
         # Authority precedence: a superseded source does not govern.
         # Re-verify against the governing passage (evidence first).
         # When a governing rule applies, the claim is VERIFIED only
@@ -665,6 +694,13 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                 item["claim"], rule["quote"], gov_text)
             entry["governing_verdict"] = gov_result["verdict"]
             entry["governing_reason"] = gov_result["reason"]
+            entry["governing_verifier_usage"] = verifier.last_usage
+            entry["governing_verifier_latency_s"] = (
+                verifier.last_latency_s)
+            entry["governing_verifier_response_model"] = (
+                verifier.last_response_model)
+            trace["verifier_usage"] = verifier.last_usage
+            trace["verifier_latency_s"] = verifier.last_latency_s
             if gov_result["verdict"] == CONTRADICTED:
                 if result["verdict"] == SUPPORTED:
                     # Faithful to its own source; only the governing

@@ -134,14 +134,19 @@ class TestVerifierParsing(unittest.TestCase):
 
 
 class _FakeResponse:
-    def __init__(self, content):
+    def __init__(self, content, model="model-x", usage=None):
         self._content = content
+        self._model = model
+        self._usage = ({"prompt_tokens": 11, "completion_tokens": 7,
+                        "total_tokens": 18}
+                       if usage is None else usage)
 
     def raise_for_status(self):
         return None
 
     def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
+        return {"model": self._model, "usage": self._usage,
+                "choices": [{"message": {"content": self._content}}]}
 
 
 def _stub_requests(captured, content='{"verdict": "SUPPORTED", '
@@ -150,7 +155,10 @@ def _stub_requests(captured, content='{"verdict": "SUPPORTED", '
 
     def post(url, headers=None, json=None, timeout=None):
         captured["url"] = url
+        captured["headers"] = headers
         captured["json"] = json
+        captured.setdefault("calls", []).append(
+            {"url": url, "headers": headers, "json": json})
         return _FakeResponse(content)
 
     fake.post = post
@@ -170,10 +178,14 @@ class TestPromptFormatting(unittest.TestCase):
         self.assertIn('"INSUFFICIENT_EVIDENCE"', prompt)
 
     def test_real_backend_builds_prompt_with_stubbed_post(self):
+        # Fix 27 primary backend: VERIFIER_* (Modal), mocked post.
         captured = {}
-        env = {"META_API_KEY": "test-key", "VERIFIER_MODEL": "model-x",
-               "META_API_BASE_URL": "https://example.invalid"}
-        with mock.patch.dict(os.environ, env), \
+        env = {"VERIFIER_API_KEY": "verifier-key",
+               "VERIFIER_MODEL": "model-x",
+               "VERIFIER_BASE_URL": "https://example.invalid/v1",
+               "META_API_KEY": "meta-key",
+               "META_API_BASE_URL": "https://meta.invalid/v1"}
+        with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.dict(sys.modules,
                                 {"requests": _stub_requests(captured)}):
             backend = make_model_backend()
@@ -187,6 +199,10 @@ class TestPromptFormatting(unittest.TestCase):
         self.assertIn("full source text", prompt)
         self.assertIn('{"verdict":', prompt)
         self.assertEqual(captured["json"]["model"], "model-x")
+        self.assertEqual(
+            captured["url"], "https://example.invalid/v1/chat/completions")
+        self.assertEqual(captured["headers"]["Authorization"],
+                         "Bearer verifier-key")
 
 
 class TestAuthority(unittest.TestCase):
@@ -341,9 +357,10 @@ class TestContextWindow(unittest.TestCase):
     def test_real_backend_sees_quote_context_past_20000(self):
         captured = {}
         source = "A" * 25000 + PED_QUOTE + "B" * 5000
-        env = {"META_API_KEY": "test-key", "VERIFIER_MODEL": "model-x",
-               "META_API_BASE_URL": "https://example.invalid"}
-        with mock.patch.dict(os.environ, env), \
+        env = {"VERIFIER_API_KEY": "verifier-key",
+               "VERIFIER_MODEL": "model-x",
+               "VERIFIER_BASE_URL": "https://example.invalid/v1"}
+        with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.dict(sys.modules,
                                 {"requests": _stub_requests(captured)}):
             backend = make_model_backend()
@@ -353,6 +370,186 @@ class TestContextWindow(unittest.TestCase):
         # Windowed source is ~4000 chars, far below the old 20000 cap
         # plus prompt overhead would still miss a quote at 25000.
         self.assertLess(len(prompt), 20000)
+
+
+class TestFix27VerifierBackends(unittest.TestCase):
+    """Fix 27: verifier env split, fallback trace, demo display."""
+
+    _MODAL_ENV = {
+        "VERIFIER_BASE_URL": "https://modal.invalid/v1",
+        "VERIFIER_API_KEY": "modal-key",
+        "VERIFIER_MODEL": "meta-models/Muse-Spark-Open-816B-A42B",
+        "META_API_KEY": "meta-key",
+        "META_API_BASE_URL": "https://api.meta.ai/v1",
+        "PROPOSER_MODEL": "muse-spark-1.3",
+    }
+
+    def _demo(self):
+        try:
+            import verify.demo as demo
+        except ImportError:
+            import demo
+        return demo
+
+    def test_primary_backend_uses_verifier_env_only(self):
+        captured = {}
+        with mock.patch.dict(os.environ, self._MODAL_ENV, clear=True), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            backend("c", PED_QUOTE, "source text")
+        self.assertEqual(
+            captured["url"], "https://modal.invalid/v1/chat/completions")
+        self.assertEqual(captured["headers"]["Authorization"],
+                         "Bearer modal-key")
+        self.assertEqual(captured["json"]["model"],
+                         "meta-models/Muse-Spark-Open-816B-A42B")
+        self.assertFalse(backend.is_fallback)
+        self.assertEqual(
+            backend.verifier_label,
+            "verifier: meta-models/Muse-Spark-Open-816B-A42B")
+        self.assertEqual(backend.last_usage["total_tokens"], 18)
+        self.assertIsNotNone(backend.last_latency_s)
+
+    def test_fallback_backend_uses_meta_env_and_labels_fallback(self):
+        captured = {}
+        env = {"META_API_KEY": "meta-key",
+               "META_API_BASE_URL": "https://api.meta.ai/v1",
+               "PROPOSER_MODEL": "muse-spark-1.3"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            backend("c", PED_QUOTE, "source text")
+        self.assertEqual(
+            captured["url"], "https://api.meta.ai/v1/chat/completions")
+        self.assertEqual(captured["headers"]["Authorization"],
+                         "Bearer meta-key")
+        self.assertEqual(captured["json"]["model"], "muse-spark-1.3")
+        self.assertTrue(backend.is_fallback)
+        self.assertEqual(backend.verifier_label,
+                         "verifier: muse-spark-1.3 (fallback)")
+
+    def test_placeholder_verifier_url_counts_as_unset(self):
+        captured = {}
+        env = dict(self._MODAL_ENV,
+                   VERIFIER_BASE_URL="PASTE_ENDPOINT_URL/v1")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            backend("c", PED_QUOTE, "source text")
+        self.assertEqual(
+            captured["url"], "https://api.meta.ai/v1/chat/completions")
+        self.assertTrue(backend.is_fallback)
+        self.assertEqual(backend.verifier_label,
+                         "verifier: muse-spark-1.3 (fallback)")
+
+    def test_proposer_keeps_meta_env(self):
+        captured = {}
+        with mock.patch.dict(os.environ, self._MODAL_ENV, clear=True), \
+                mock.patch.dict(sys.modules, {"requests": _stub_requests(
+                    captured, content='{"claims": []}')}):
+            make_model_proposer()("What is the PED waiting period?", "en")
+        self.assertEqual(
+            captured["url"], "https://api.meta.ai/v1/chat/completions")
+        self.assertEqual(captured["headers"]["Authorization"],
+                         "Bearer meta-key")
+        self.assertEqual(captured["json"]["model"], "muse-spark-1.3")
+
+    def test_pipeline_trace_and_demo_show_modal_verifier(self):
+        captured = {}
+        draft = {"claims": [{
+            "claim": "The PED waiting period is maximum up to 36 months "
+                     "of continuous coverage.",
+            "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+        with mock.patch.dict(os.environ, self._MODAL_ENV), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            # Proposer injected; default verifier = mocked Modal backend.
+            trace = answer("What is the maximum PED waiting period?",
+                           proposer=fake_proposer(draft))
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(
+            trace["verifier"],
+            "verifier: meta-models/Muse-Spark-Open-816B-A42B")
+        self.assertEqual(trace["verifier_model"],
+                         "meta-models/Muse-Spark-Open-816B-A42B")
+        self.assertFalse(trace["verifier_fallback"])
+        claim = trace["claims"][0]
+        self.assertEqual(claim["verifier_model"],
+                         "meta-models/Muse-Spark-Open-816B-A42B")
+        self.assertEqual(claim["verifier_usage"]["total_tokens"], 18)
+        self.assertIsNotNone(claim["verifier_latency_s"])
+        text = self._demo().format_trace(trace, color=False)
+        s4 = text.split("Stage 4")[1].split("Stage 5")[0]
+        self.assertIn("meta-models/Muse-Spark-Open-816B-A42B", s4)
+        self.assertIn("Verifier:", s4)
+
+    def test_pipeline_trace_and_demo_show_fallback_verifier(self):
+        captured = {}
+        env = {"META_API_KEY": "meta-key",
+               "META_API_BASE_URL": "https://api.meta.ai/v1",
+               "PROPOSER_MODEL": "muse-spark-1.3",
+               "VERIFIER_BASE_URL": "", "VERIFIER_API_KEY": "",
+               "VERIFIER_MODEL": ""}
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        # Cited quote SUPPORTED, governing quote CONTRADICTED (case C).
+        def content_for(json_payload):
+            prompt = json_payload["messages"][0]["content"]
+            if PED_QUOTE in prompt and "48 months" in prompt:
+                return ('{"verdict": "CONTRADICTED", "reason": '
+                        '"Governing passage caps PED at 36 months."}')
+            return ('{"verdict": "SUPPORTED", "reason": '
+                    '"The Arogya quote states 48 months."}')
+        fake = types.ModuleType("requests")
+
+        def post(url, headers=None, json=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return _FakeResponse(content_for(json))
+
+        fake.post = post
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.dict(sys.modules, {"requests": fake}):
+            trace = answer("What is the PED waiting period?",
+                           proposer=fake_proposer(draft))
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        self.assertEqual(trace["verifier"],
+                         "verifier: muse-spark-1.3 (fallback)")
+        self.assertTrue(trace["verifier_fallback"])
+        self.assertEqual(trace["claims"][0]["verifier_model"],
+                         "muse-spark-1.3")
+        text = self._demo().format_trace(trace, color=False)
+        s4 = text.split("Stage 4")[1].split("Stage 5")[0]
+        s5 = text.split("Stage 5")[1].split("Stage 6")[0]
+        self.assertIn("Verifier: muse-spark-1.3 (fallback)", s4)
+        self.assertIn("Verifier: muse-spark-1.3 (fallback)", s5)
+
+    def test_callcheck_stage3_4_show_verifier_model(self):
+        try:
+            import verify.callcheck as cc
+        except ImportError:
+            import callcheck as cc
+        backend = fake_backend(
+            {"verdict": CONTRADICTED, "reason": "Rule says opposite."})
+        backend.model = "meta-models/Muse-Spark-Open-816B-A42B"
+        backend.is_fallback = False
+        backend.verifier_label = (
+            "verifier: meta-models/Muse-Spark-Open-816B-A42B")
+        trace = cc.check_call(
+            "IRDAI is calling about your bonus", verifier=backend)
+        self.assertEqual(
+            trace["verifier_model"],
+            "meta-models/Muse-Spark-Open-816B-A42B")
+        text = cc.format_call_trace(trace)
+        s3 = text.split("Stage 3")[1].split("Stage 4")[0]
+        s4 = text.split("Stage 4")[1]
+        self.assertIn("meta-models/Muse-Spark-Open-816B-A42B", s3)
+        self.assertIn("meta-models/Muse-Spark-Open-816B-A42B", s4)
 
 
 class TestPipelineScenarios(unittest.TestCase):

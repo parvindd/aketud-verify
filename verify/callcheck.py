@@ -525,6 +525,15 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         backend = verifier
     else:
         backend = Verifier(verifier)
+    # Which model verified (Fix 27); no model in offline rule mode.
+    if backend is not None:
+        trace["verifier"] = backend.label
+        trace["verifier_model"] = backend.model
+        trace["verifier_fallback"] = backend.fallback
+    else:
+        trace["verifier"] = "verifier: (deterministic rules, no model)"
+        trace["verifier_model"] = None
+        trace["verifier_fallback"] = None
 
     for item in extracted:
         entry = dict(item)
@@ -535,6 +544,9 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         entry["evidence"] = evidence
         entry["verifier_verdict"] = None
         entry["verifier_reason"] = None
+        entry["verifier"] = trace["verifier"]
+        entry["verifier_model"] = trace["verifier_model"]
+        entry["verifier_fallback"] = trace["verifier_fallback"]
 
         # Scope guardrails (fail closed, before any verdict display).
         if kind == "payment_link":
@@ -568,6 +580,13 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             result = _semantic_verdict(entry)
         entry["verifier_verdict"] = result["verdict"]
         entry["verifier_reason"] = result["reason"]
+        entry["verifier"] = trace["verifier"]
+        entry["verifier_model"] = trace["verifier_model"]
+        entry["verifier_fallback"] = trace["verifier_fallback"]
+        entry["verifier_usage"] = (
+            backend.last_usage if backend is not None else None)
+        entry["verifier_latency_s"] = (
+            backend.last_latency_s if backend is not None else None)
         entry["reason"] = _specific_reason(entry, product, lang)
         entry["verdict"] = _DISPLAY.get(
             result["verdict"], CANNOT_BE_CONFIRMED)
@@ -620,6 +639,19 @@ def normalise_display_text(text):
 normalize_display_text = normalise_display_text
 
 
+def _verifier_display(trace, claim=None):
+    """Which model verified ``claim`` (Fix 27), for Stage 3/4."""
+    claim = claim or {}
+    model = claim.get("verifier_model") or trace.get("verifier_model")
+    fallback = claim.get("verifier_fallback")
+    if fallback is None:
+        fallback = trace.get("verifier_fallback")
+    if model:
+        return "%s%s" % (model, " (fallback)" if fallback else "")
+    label = claim.get("verifier") or trace.get("verifier") or ""
+    return str(label).removeprefix("verifier: ") or "(not configured)"
+
+
 def format_call_trace(trace, *, color=False, show_transcript=True):
     """Render a call-check trace for the demo CLI."""
     transcript_line = (str(trace.get("transcript") or "")
@@ -651,6 +683,7 @@ def format_call_trace(trace, *, color=False, show_transcript=True):
                          idx, "FOUND" if found else "NOT FOUND",
                          evidence.get("exists"), evidence.get("found"),
                          claim.get("verifier_verdict") or "(not run)"))
+        lines.append("  Verifier: %s" % _verifier_display(trace, claim))
     lines += ["", "Stage 4 — Per-claim verdicts",
               "----------------------------"]
     if not claims:
@@ -660,6 +693,7 @@ def format_call_trace(trace, *, color=False, show_transcript=True):
         lines.append("Claim %d: %s" % (
             idx, claim.get("verdict_label",
                            claim.get("verdict", ""))))
+        lines.append("  Verifier: %s" % _verifier_display(trace, claim))
         lines.append("  %s" % normalise_display_text(
             claim.get("reason") or ""))
     lines += ["", "Final block", "-----------",

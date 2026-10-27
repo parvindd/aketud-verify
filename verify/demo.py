@@ -156,6 +156,19 @@ def normalise_display_text(text):
 normalize_display_text = normalise_display_text
 
 
+def _verifier_display(trace, claim=None):
+    """Which model verified ``claim`` (Fix 27), for Stage 4/5."""
+    claim = claim or {}
+    model = claim.get("verifier_model") or trace.get("verifier_model")
+    fallback = claim.get("verifier_fallback")
+    if fallback is None:
+        fallback = trace.get("verifier_fallback")
+    if model:
+        return "%s%s" % (model, " (fallback)" if fallback else "")
+    label = claim.get("verifier") or trace.get("verifier") or ""
+    return str(label).removeprefix("verifier: ") or "(not configured)"
+
+
 def _draft_claims(trace):
     claims = trace.get("claims") or []
     if claims:
@@ -247,6 +260,7 @@ def format_trace(trace, *, color=False, raw=False):
         lines.append("Claim %d: %s — %s" % (idx, verdict, reason))
         lines.append("  Cited source: %s"
                      % claim.get("source_file", ""))
+        lines.append("  Verifier: %s" % _verifier_display(trace, claim))
     lines.append("")
 
     stage += 1
@@ -273,6 +287,7 @@ def format_trace(trace, *, color=False, raw=False):
         lines.append("  Governing verdict: %s — %s"
                      % (claim.get("governing_verdict") or "(none)",
                         claim.get("governing_reason") or ""))
+        lines.append("  Verifier: %s" % _verifier_display(trace, claim))
         if claim.get("governing_quote"):
             lines.append("  Governing quote: %s"
                          % normalise_display_text(

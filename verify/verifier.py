@@ -14,13 +14,29 @@ non-object, a missing/unknown verdict, or a backend exception —
 fails closed to ``INSUFFICIENT_EVIDENCE``. Nothing not proven
 ``SUPPORTED`` is ever treated as supported.
 
-No real model is wired here. ``make_model_backend()`` builds a
-backend from the environment (``META_API_KEY``, ``VERIFIER_MODEL``,
-``META_API_BASE_URL``) using ``requests``; it is never called by the
-offline tests, which inject fake backends.
+``make_model_backend()`` builds the live backend from the
+environment using ``requests``; it is never called by the offline
+tests, which inject fake backends and stub ``requests.post`` for
+both backends (see below).
+
+Verifier backend selection (Fix 27 — Muse Spark Open on Modal):
+
+* Primary: the verifier reads its *own* env — ``VERIFIER_BASE_URL``,
+  ``VERIFIER_API_KEY`` and ``VERIFIER_MODEL`` — an OpenAI-compatible
+  ``/chat/completions`` endpoint (Muse Spark Open on Modal).
+* Fallback: if any of ``VERIFIER_*`` is unset (a non-HTTP(S)
+  placeholder such as ``PASTE_ENDPOINT_URL/v1`` counts as unset),
+  the current Meta Model API verifier is used instead
+  (``META_API_KEY`` / ``META_API_BASE_URL`` with
+  ``PROPOSER_MODEL`` or :data:`FALLBACK_MODEL`), and the trace says
+  so: ``verifier: muse-spark-1.3 (fallback)``.
+
+The proposer is unaffected: it keeps ``META_API_*`` /
+``PROPOSER_MODEL`` (see ``verify.pipeline.make_model_proposer``).
 """
 import json
 import os
+import time
 
 SUPPORTED = "SUPPORTED"
 CONTRADICTED = "CONTRADICTED"
@@ -117,11 +133,95 @@ def _parse_backend_output(raw):
             "reason": reason or "Verifier gave no reason."}
 
 
-class Verifier:
-    """Wraps a backend callable with strict, fail-closed parsing."""
+FALLBACK_MODEL = "muse-spark-1.3"
 
-    def __init__(self, backend=None):
+
+def _is_http_url(value):
+    return bool(value) and str(value).strip().lower().startswith(
+        ("http://", "https://"))
+
+
+def resolve_verifier_config(env=None):
+    """Resolve verifier backend config from the environment.
+
+    Returns ``{base_url, api_key, model, fallback}``. The primary
+    (Modal) backend is used only when ``VERIFIER_BASE_URL`` (an
+    HTTP(S) URL), ``VERIFIER_API_KEY`` and ``VERIFIER_MODEL`` are
+    all set; otherwise the Meta Model API fallback is returned with
+    ``fallback=True`` (its model is ``PROPOSER_MODEL`` or
+    :data:`FALLBACK_MODEL`, never the Modal model id).
+    """
+    env = os.environ if env is None else env
+    v_base = (env.get("VERIFIER_BASE_URL") or "").strip()
+    v_key = (env.get("VERIFIER_API_KEY") or "").strip()
+    v_model = (env.get("VERIFIER_MODEL") or "").strip()
+    if _is_http_url(v_base) and v_key and v_model:
+        return {"base_url": v_base, "api_key": v_key,
+                "model": v_model, "fallback": False}
+    return {
+        "base_url": (env.get("META_API_BASE_URL") or "").strip() or None,
+        "api_key": (env.get("META_API_KEY") or "").strip() or None,
+        "model": ((env.get("PROPOSER_MODEL") or "").strip()
+                  or FALLBACK_MODEL),
+        "fallback": True,
+    }
+
+
+def verifier_label(model=None, fallback=None, env=None):
+    """Trace label, e.g. ``verifier: muse-spark-1.3 (fallback)``."""
+    cfg = resolve_verifier_config(env)
+    model_id = model or cfg["model"]
+    is_fallback = cfg["fallback"] if fallback is None else fallback
+    label = "verifier: %s" % model_id
+    if is_fallback:
+        label += " (fallback)"
+    return label
+
+
+class Verifier:
+    """Wraps a backend callable with strict, fail-closed parsing.
+
+    ``model`` / ``fallback`` / ``label`` identify which model
+    verified claims (read from the backend's ``model`` /
+    ``is_fallback`` / ``verifier_label`` attributes when not given
+    explicitly). After each live call, ``last_usage``,
+    ``last_latency_s`` and ``last_response_model`` mirror the
+    backend's recorded response data (``None`` for fake backends).
+    """
+
+    def __init__(self, backend=None, *, model=None, fallback=None,
+                 label=None):
         self._backend = backend
+        backend_model = None
+        backend_fallback = None
+        backend_label = None
+        if backend is not None:
+            backend_model = (getattr(backend, "model", None)
+                             or getattr(backend, "verifier_model", None))
+            if hasattr(backend, "is_fallback"):
+                backend_fallback = getattr(backend, "is_fallback")
+            elif hasattr(backend, "fallback"):
+                backend_fallback = getattr(backend, "fallback")
+            backend_label = (getattr(backend, "verifier_label", None)
+                             or getattr(backend, "label", None))
+        self.model = model or backend_model
+        self.fallback = (backend_fallback if fallback is None
+                         else fallback)
+        self._label = label or backend_label
+        self.last_usage = None
+        self.last_latency_s = None
+        self.last_response_model = None
+
+    @property
+    def label(self):
+        """Trace label for this verifier (see :func:`verifier_label`)."""
+        if self._label:
+            return self._label
+        if self.model:
+            return verifier_label(self.model, self.fallback)
+        if self._backend is None:
+            return "verifier: (not configured)"
+        return "verifier: (injected backend)"
 
     def verify(self, claim, quote, source_text):
         if self._backend is None:
@@ -140,6 +240,11 @@ class Verifier:
             return _insufficient(
                 "Verifier backend failed (%s); failing closed."
                 % type(exc).__name__)
+        self.last_usage = getattr(self._backend, "last_usage", None)
+        self.last_latency_s = getattr(
+            self._backend, "last_latency_s", None)
+        self.last_response_model = getattr(
+            self._backend, "last_response_model", None)
         return _parse_backend_output(raw)
 
 
@@ -154,20 +259,35 @@ def verify_claim(claim, quote, source_text, backend=None):
 
 
 def make_model_backend(model=None, *, timeout=60):
-    """Build a Meta Model API backend from the environment.
+    """Build the live verifier backend from the environment.
 
-    Reads ``META_API_KEY``, ``VERIFIER_MODEL`` and
-    ``META_API_BASE_URL`` from the environment; no secret or model id
-    is hard-coded. Raises ``RuntimeError`` if they are unset. Not
-    called by offline tests.
+    Primary (Fix 27): ``VERIFIER_BASE_URL`` / ``VERIFIER_API_KEY`` /
+    ``VERIFIER_MODEL`` (OpenAI-compatible ``/chat/completions``,
+    Muse Spark Open on Modal). If any of ``VERIFIER_*`` is unset,
+    falls back to the Meta Model API verifier (``META_API_KEY`` /
+    ``META_API_BASE_URL``, model ``PROPOSER_MODEL`` or
+    ``muse-spark-1.3``); the returned backend then carries
+    ``is_fallback=True`` and label ``verifier: muse-spark-1.3
+    (fallback)``. Raises ``RuntimeError`` if the selected backend's
+    env is incomplete. Not called by offline tests (both backends
+    are mocked there).
+
+    The backend records ``last_usage`` (the response ``usage``
+    object), ``last_latency_s`` and ``last_response_model`` after
+    each call, and exposes ``model`` / ``is_fallback`` /
+    ``verifier_label`` for the trace and demo.
     """
-    api_key = os.environ.get("META_API_KEY")
-    model_id = model or os.environ.get("VERIFIER_MODEL")
-    base_url = os.environ.get("META_API_BASE_URL")
+    cfg = resolve_verifier_config()
+    model_id = model or cfg["model"]
+    base_url = cfg["base_url"]
+    api_key = cfg["api_key"]
+    is_fallback = cfg["fallback"]
     if not api_key or not model_id or not base_url:
         raise RuntimeError(
-            "META_API_KEY, VERIFIER_MODEL and META_API_BASE_URL must "
-            "be set to use the model verifier backend.")
+            "VERIFIER_BASE_URL, VERIFIER_API_KEY and VERIFIER_MODEL "
+            "(or the META_API_KEY / META_API_BASE_URL fallback) must "
+            "be set to use the verifier backend.")
+    label = verifier_label(model_id, is_fallback)
 
     def backend(claim, quote, source_text):
         import requests  # allowed dependency; imported lazily
@@ -175,6 +295,7 @@ def make_model_backend(model=None, *, timeout=60):
         prompt = _PROMPT.format(
             claim=claim, quote=quote,
             source_text=_context_window(source_text, quote))
+        started = time.monotonic()
         resp = requests.post(
             base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": "Bearer " + api_key,
@@ -184,7 +305,25 @@ def make_model_backend(model=None, *, timeout=60):
                   "temperature": 0},
             timeout=timeout,
         )
+        backend.last_latency_s = time.monotonic() - started
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        payload = resp.json()
+        backend.last_usage = payload.get("usage")
+        backend.last_response_model = payload.get("model")
+        return payload["choices"][0]["message"]["content"]
 
+    backend.model = model_id
+    backend.verifier_model = model_id
+    backend.is_fallback = is_fallback
+    backend.fallback = is_fallback
+    backend.verifier_label = label
+    backend.label = label
+    backend.base_url = base_url
+    backend.last_usage = None
+    backend.last_latency_s = None
+    backend.last_response_model = None
     return backend
+
+
+# Alias for discoverability (Fix 27).
+make_verifier_backend = make_model_backend
