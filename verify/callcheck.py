@@ -136,14 +136,25 @@ def extract_caller_claims(transcript):
             "Caller claims the policy must be revived today or it "
             "will lapse forever", 2, scope=scope)
 
+    # Rule 1: revival guaranteed / pakka (contradicts underwriting).
+    if any(k in lowered for k in (
+            "guaranteed", "guarantee", "pakka", "pakki",
+            "गारंटी", "पक्का", "पक्की")):
+        add("revival_guaranteed",
+            "Caller claims revival is guaranteed", 1)
+
     # Rule 3 / fee: caller demands a revival fee or charge.
     fee_words = any(k in lowered for k in (
-        "fee", "charge", "शुल्क", "फीस"))
+        "fee", "charge", "shulk", "शुल्क", "फीस"))
     if fee_words and (revival or _AMOUNT_RE.search(text)):
         amount = _AMOUNT_RE.search(text)
         suffix = " (%s)" % amount.group(0) if amount else ""
         add("revival_fee",
             "Caller claims a revival fee must be paid%s" % suffix, 3)
+    elif any(k in lowered for k in ("link", "लिंक")) and any(
+            k in lowered for k in ("pay", "payment", "भेज", "pay kar")):
+        add("payment_link",
+            "Caller asks for payment through a link", 1)
 
     # Policy existence/status: never confirmable here.
     if any(k in lowered for k in (
@@ -157,9 +168,15 @@ def extract_caller_claims(transcript):
 
 def _infer_kind(claim_text):
     lowered = str(claim_text or "").lower()
-    if any(k in lowered for k in ("fee", "charge", "शुल्क", "फीस")):
+    if any(k in lowered for k in (
+            "guaranteed", "guarantee", "pakka", "गारंटी", "पक्का")):
+        return "revival_guaranteed"
+    if any(k in lowered for k in (
+            "fee", "charge", "shulk", "शुल्क", "फीस")):
         return "revival_fee"
-    if "irdai" in lowered or "bonus" in lowered:
+    if "link" in lowered or "लिंक" in lowered:
+        return "payment_link"
+    if "irdai" in lowered or "bonus" in lowered or "बोनस" in lowered:
         return "irdai_calling"
     if any(k in lowered for k in ("today", "forever", "aaj", "turant")):
         return "revival_deadline"
@@ -168,10 +185,100 @@ def _infer_kind(claim_text):
     return ""
 
 
+# --- Deterministic keyword pass (Fix 20) ---------------------------
+# Flags every rule-checkable sentence the proposer did not extract.
+_KEYWORD_GROUPS = (
+    ("revival_guaranteed", 1, None,
+     ("guaranteed", "guarantee", "pakka", "pakki", "गारंटी", "पक्का")),
+    ("revival_fee", 3, None,
+     ("fee", "charge", "charges", "shulk", "शुल्क", "फीस")),
+    ("irdai_calling", 4, None,
+     ("irdai", "bonus", "बोनस", "आईआरडीएआई")),
+    ("revival_deadline", 2, None,
+     ("aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त")),
+    ("payment_link", 1, None, ("link", "लिंक")),
+)
+
+_SENTENCE_RE = re.compile(r"[^.!?।\n]+[.!?।]?")
+
+
+def split_sentences(text):
+    return [s.strip() for s in _SENTENCE_RE.findall(str(text or ""))
+            if s.strip()]
+
+
+def _classify_sentence(sentence, product):
+    cands = _classify_sentence_all(sentence, product)
+    return cands[0] if cands else None
+
+
+def _classify_sentence_all(sentence, product):
+    lowered = sentence.lower()
+    out = []
+    if any(k in lowered for k in (
+            "fee", "charge", "charges", "shulk", "शुल्क", "फीस")):
+        amount = _AMOUNT_RE.search(sentence)
+        suffix = " (%s)" % amount.group(0) if amount else ""
+        out.append(("revival_fee",
+                    "Caller claims a revival fee must be paid%s" % suffix,
+                    3, None))
+    elif ("link" in lowered or "लिंक" in lowered):
+        out.append(("payment_link",
+                    "Caller asks for payment through a link", 1, None))
+    if "irdai" in lowered or "bonus" in lowered or "बोनस" in lowered \
+            or "आईआरडीएआई" in lowered:
+        out.append(("irdai_calling",
+                    "Caller claims IRDAI is calling about a bonus/policy",
+                    4, None))
+    if any(k in lowered for k in (
+            "aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त")):
+        scope = ("linked products only" if product == "linked"
+                 else "non-linked products only")
+        out.append(("revival_deadline",
+                    "Caller claims the policy must be revived today or "
+                    "it will lapse forever", 2, scope))
+    if any(k in lowered for k in (
+            "guaranteed", "guarantee", "pakka", "pakki",
+            "गारंटी", "पक्का", "पक्की")):
+        out.append(("revival_guaranteed",
+                    "Caller claims revival is guaranteed", 1, None))
+    return out
+
+
+def keyword_flagged_claims(transcript, existing_claims):
+    """Claims for flagged sentences not already extracted."""
+    product = detect_product_type(transcript)
+    existing_kinds = set()
+    for item in existing_claims or []:
+        kind = item.get("kind") or _infer_kind(item.get("claim"))
+        if kind:
+            existing_kinds.add(kind)
+    out = []
+    for sentence in split_sentences(transcript):
+        for kind, claim, rule, scope in _classify_sentence_all(
+                sentence, product):
+            if kind in existing_kinds:
+                continue
+            entry = _rule_entry(rule, scope=scope)
+            if entry is None:
+                continue
+            existing_kinds.add(kind)
+            out.append({
+                "claim": claim, "kind": kind, "rule": rule,
+                "source_file": entry["source_file"],
+                "quote": entry["quote"],
+                "citation": entry.get("citation", ""),
+                "scope": entry.get("scope", ""),
+                "sentence": sentence,
+            })
+    return out
+
+
 def _semantic_verdict(entry):
     """Offline verdict from the mapped rule's verified meaning."""
     kind = entry.get("kind") or _infer_kind(entry.get("claim"))
-    if kind in ("revival_deadline", "irdai_calling"):
+    if kind in ("revival_deadline", "irdai_calling",
+                "revival_guaranteed"):
         return {"verdict": CONTRADICTED,
                 "reason": "The mapped rule states the opposite."}
     if kind == "revival_fee":
@@ -247,6 +354,9 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             extracted = []
     else:
         extracted = extract_caller_claims(transcript)
+    # Fix 20: deterministic keyword pass — no missed claims.
+    extracted = list(extracted) + keyword_flagged_claims(
+        transcript, extracted)
 
     if verifier is None:
         backend = None
@@ -266,6 +376,13 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         entry["verifier_reason"] = None
 
         # Scope guardrails (fail closed, before any verdict display).
+        if kind == "payment_link":
+            entry["verdict"] = CANNOT_BE_CONFIRMED
+            entry["reason"] = (
+                "No verified rule confirms paying through a link "
+                "sent by a caller.")
+            trace["claims"].append(entry)
+            continue
         if kind == "policy_status":
             entry["verdict"] = CANNOT_BE_CONFIRMED
             entry["reason"] = (

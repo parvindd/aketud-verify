@@ -1287,6 +1287,46 @@ class TestCaseDCallCheck(unittest.TestCase):
                          CONTRADICTED)
         self.assertTrue(trace["claims"][0]["evidence"]["found"])
 
+    _FULL_TRANSCRIPT = (
+        "Sir main IRDAI se bol raha hoon. Aapki policy aaj lapse "
+        "ho jayegi, aaj hi revive karna padega warna hamesha ke "
+        "liye khatam. Aapka bonus bhi pending hai. Revival fee "
+        "2,000 rupaye is link pe abhi pay kar dijiye, revival "
+        "guaranteed hai.")
+
+    def test_fix20_full_transcript_yields_4_claims(self):
+        cc = self._callcheck()
+        trace = cc.check_call(self._FULL_TRANSCRIPT)
+        self.assertEqual(len(trace["claims"]), 4, trace["claims"])
+        kinds = [c["kind"] for c in trace["claims"]]
+        self.assertIn("revival_guaranteed", kinds)
+        guaranteed = [c for c in trace["claims"]
+                      if c["kind"] == "revival_guaranteed"][0]
+        self.assertEqual(guaranteed["verdict"], cc.CONTRADICTS_RULES)
+        self.assertEqual(guaranteed["rule"], 1)
+
+    def test_fix20_keyword_pass_covers_empty_proposer(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            self._FULL_TRANSCRIPT,
+            proposer=lambda t, lang: {"claims": []})
+        self.assertEqual(len(trace["claims"]), 4, trace["claims"])
+        kinds = {c["kind"] for c in trace["claims"]}
+        self.assertIn("revival_guaranteed", kinds)
+        self.assertIn("revival_fee", kinds)
+
+    def test_fix20_keyword_variants(self):
+        cc = self._callcheck()
+        for text, kind in (
+                ("Revival pakka hai", "revival_guaranteed"),
+                ("रिवाइवल गारंटी है", "revival_guaranteed"),
+                ("Turant revive karo", "revival_deadline"),
+                ("Revival shulk bharo", "revival_fee"),
+                ("Is link pe pay karo", "payment_link")):
+            trace = cc.check_call(text)
+            self.assertIn(kind, [c["kind"] for c in trace["claims"]],
+                          text)
+
     def test_hinglish_transcript_and_safety_advice_always(self):
         cc = self._callcheck()
         demo = TestDemo()._demo()
