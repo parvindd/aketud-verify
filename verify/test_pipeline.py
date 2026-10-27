@@ -552,6 +552,107 @@ class TestFix27VerifierBackends(unittest.TestCase):
         self.assertIn("meta-models/Muse-Spark-Open-816B-A42B", s4)
 
 
+class TestFix28VerifierCheapParallel(unittest.TestCase):
+    """Fix 28: json_object/low/300 payload, parallel verifier calls."""
+
+    def test_backend_payload_is_cheap_json_mode(self):
+        captured = {}
+        env = {"VERIFIER_API_KEY": "verifier-key",
+               "VERIFIER_MODEL": "model-x",
+               "VERIFIER_BASE_URL": "https://example.invalid/v1"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.dict(sys.modules,
+                                {"requests": _stub_requests(captured)}):
+            backend = make_model_backend()
+            raw = backend("c", PED_QUOTE, "source text")
+        self.assertEqual(json.loads(raw)["verdict"], SUPPORTED)
+        payload = captured["json"]
+        self.assertEqual(payload["response_format"],
+                         {"type": "json_object"})
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertEqual(payload["max_tokens"], 300)
+
+    def test_case_c_calls_run_in_parallel_with_per_call_usage(self):
+        import threading
+        import time as time_mod
+        state = {"active": 0, "max_active": 0}
+        lock = threading.Lock()
+
+        class Resp:
+            def __init__(self, content, usage):
+                self._content = content
+                self._usage = usage
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"model": "model-x", "usage": self._usage,
+                        "choices": [{"message": {
+                            "content": self._content}}]}
+
+        fake = types.ModuleType("requests")
+
+        def post(url, headers=None, json=None, timeout=None):
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(
+                    state["max_active"], state["active"])
+            try:
+                time_mod.sleep(0.25)
+                prompt = json["messages"][0]["content"]
+                if ("Quote: " + PED_QUOTE) in prompt:
+                    return Resp(
+                        '{"verdict": "CONTRADICTED", "reason": '
+                        '"Governing passage caps PED at 36 months."}',
+                        {"prompt_tokens": 20, "completion_tokens": 2,
+                         "total_tokens": 22})
+                return Resp(
+                    '{"verdict": "SUPPORTED", "reason": '
+                    '"The Arogya quote states 48 months."}',
+                    {"prompt_tokens": 10, "completion_tokens": 1,
+                     "total_tokens": 11})
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+        fake.post = post
+        env = {"VERIFIER_API_KEY": "verifier-key",
+               "VERIFIER_MODEL": "model-x",
+               "VERIFIER_BASE_URL": "https://example.invalid/v1"}
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        started = time_mod.monotonic()
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.dict(sys.modules, {"requests": fake}):
+            trace = answer("What is the PED waiting period?",
+                           proposer=fake_proposer(draft))
+        elapsed = time_mod.monotonic() - started
+        self.assertEqual(trace["decision"], SUPERSEDED)
+        self.assertGreaterEqual(state["max_active"], 2)
+        self.assertLess(elapsed, 5)
+        claim = trace["claims"][0]
+        self.assertEqual(claim["verdict"], SUPPORTED)
+        self.assertEqual(claim["governing_verdict"], CONTRADICTED)
+        # Per-call tokens kept separate despite parallel calls.
+        self.assertEqual(claim["verifier_usage"]["total_tokens"], 11)
+        self.assertEqual(
+            claim["governing_verifier_usage"]["total_tokens"], 22)
+        self.assertIsNotNone(claim["verifier_latency_s"])
+        self.assertIsNotNone(claim["governing_verifier_latency_s"])
+
+    def test_malformed_parallel_output_still_fails_closed(self):
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer(
+            "What is the PED waiting period?",
+            proposer=fake_proposer(draft),
+            verifier=fake_backend("not json"))
+        self.assertEqual(trace["decision"], REFUSED)
+
+
 class TestPipelineScenarios(unittest.TestCase):
     def test_a_supported_ped_cap_is_verified(self):
         draft = {"claims": [{

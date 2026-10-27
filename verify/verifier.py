@@ -36,6 +36,7 @@ The proposer is unaffected: it keeps ``META_API_*`` /
 """
 import json
 import os
+import threading
 import time
 
 SUPPORTED = "SUPPORTED"
@@ -187,10 +188,38 @@ class Verifier:
     explicitly). After each live call, ``last_usage``,
     ``last_latency_s`` and ``last_response_model`` mirror the
     backend's recorded response data (``None`` for fake backends).
+    Those three are thread-local so one ``Verifier`` may be shared
+    by the pipeline's thread pool without calls overwriting each
+    other's usage/latency.
     """
+
+    @property
+    def last_usage(self):
+        return getattr(self._local, "last_usage", None)
+
+    @last_usage.setter
+    def last_usage(self, value):
+        self._local.last_usage = value
+
+    @property
+    def last_latency_s(self):
+        return getattr(self._local, "last_latency_s", None)
+
+    @last_latency_s.setter
+    def last_latency_s(self, value):
+        self._local.last_latency_s = value
+
+    @property
+    def last_response_model(self):
+        return getattr(self._local, "last_response_model", None)
+
+    @last_response_model.setter
+    def last_response_model(self, value):
+        self._local.last_response_model = value
 
     def __init__(self, backend=None, *, model=None, fallback=None,
                  label=None):
+        self._local = threading.local()
         self._backend = backend
         backend_model = None
         backend_fallback = None
@@ -288,8 +317,57 @@ def make_model_backend(model=None, *, timeout=60):
             "(or the META_API_KEY / META_API_BASE_URL fallback) must "
             "be set to use the verifier backend.")
     label = verifier_label(model_id, is_fallback)
+    return _ModelBackend(model_id, base_url, api_key, is_fallback,
+                         label, timeout)
 
-    def backend(claim, quote, source_text):
+
+class _ModelBackend:
+    """OpenAI-compatible verifier backend (Fix 28).
+
+    Sends ``response_format`` json_object, ``reasoning_effort``
+    ``"low"`` and ``max_tokens`` 300 — parsing stays strict /
+    fail-closed in :class:`Verifier`. ``last_*`` are thread-local
+    so parallel calls each keep their own usage/latency.
+    """
+
+    def __init__(self, model_id, base_url, api_key, is_fallback,
+                 label, timeout=60):
+        self.model = model_id
+        self.verifier_model = model_id
+        self.is_fallback = is_fallback
+        self.fallback = is_fallback
+        self.verifier_label = label
+        self.label = label
+        self.base_url = base_url
+        self._api_key = api_key
+        self._timeout = timeout
+        self._local = threading.local()
+
+    @property
+    def last_usage(self):
+        return getattr(self._local, "last_usage", None)
+
+    @last_usage.setter
+    def last_usage(self, value):
+        self._local.last_usage = value
+
+    @property
+    def last_latency_s(self):
+        return getattr(self._local, "last_latency_s", None)
+
+    @last_latency_s.setter
+    def last_latency_s(self, value):
+        self._local.last_latency_s = value
+
+    @property
+    def last_response_model(self):
+        return getattr(self._local, "last_response_model", None)
+
+    @last_response_model.setter
+    def last_response_model(self, value):
+        self._local.last_response_model = value
+
+    def __call__(self, claim, quote, source_text):
         import requests  # allowed dependency; imported lazily
 
         prompt = _PROMPT.format(
@@ -297,32 +375,23 @@ def make_model_backend(model=None, *, timeout=60):
             source_text=_context_window(source_text, quote))
         started = time.monotonic()
         resp = requests.post(
-            base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": "Bearer " + api_key,
+            self.base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": "Bearer " + self._api_key,
                      "Content-Type": "application/json"},
-            json={"model": model_id,
+            json={"model": self.model,
                   "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0},
-            timeout=timeout,
+                  "temperature": 0,
+                  "response_format": {"type": "json_object"},
+                  "reasoning_effort": "low",
+                  "max_tokens": 300},
+            timeout=self._timeout,
         )
-        backend.last_latency_s = time.monotonic() - started
+        self.last_latency_s = time.monotonic() - started
         resp.raise_for_status()
         payload = resp.json()
-        backend.last_usage = payload.get("usage")
-        backend.last_response_model = payload.get("model")
+        self.last_usage = payload.get("usage")
+        self.last_response_model = payload.get("model")
         return payload["choices"][0]["message"]["content"]
-
-    backend.model = model_id
-    backend.verifier_model = model_id
-    backend.is_fallback = is_fallback
-    backend.fallback = is_fallback
-    backend.verifier_label = label
-    backend.label = label
-    backend.base_url = base_url
-    backend.last_usage = None
-    backend.last_latency_s = None
-    backend.last_response_model = None
-    return backend
 
 
 # Alias for discoverability (Fix 27).

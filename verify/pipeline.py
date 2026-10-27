@@ -50,6 +50,7 @@ response ``usage``/latency when a live backend recorded them.
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from verify.authority import (REGISTRY, effective_display,
@@ -585,6 +586,12 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     has_superseded = False
     corrected_records = []
     superseded_records = []
+    # Fix 28: collect every verifier call (cited + governing) first,
+    # run them in parallel on a small pool, then replay the results
+    # in the original claim/rule order below. Trace order, verdict
+    # precedence and refusal order are unchanged.
+    jobs = []
+    prepared = []
     for item in claims:
         entry = {"claim": item["claim"],
                  "source_file": item["source_file"],
@@ -602,6 +609,10 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                  or _extract_value(item["claim"]),
                  "cited_title": source_title(item["source_file"]),
                  "governing_value": None}
+        work = {"item": item, "entry": entry, "cited_job": None,
+                "governing": [], "governing_rules": [],
+                "governing_uncertain": False}
+        prepared.append(work)
         evidence = check_evidence(item["source_file"], item["quote"],
                                   raw_dir=raw_dir)
         entry["evidence"] = evidence
@@ -612,11 +623,57 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                 "Evidence check failed (exists=%s, found=%s); claim "
                 "not verified." % (evidence["exists"], evidence["found"]))
             entry["refusal_reason"] = REFUSAL_EVIDENCE_NOT_FOUND
+            continue
+        source_text = extract_text(item["source_file"], raw_dir=raw_dir)
+        work["cited_job"] = len(jobs)
+        jobs.append((item["claim"], item["quote"], source_text))
+        governing_rules = governing_for(
+            item["source_file"],
+            text=item["claim"] + " " + str(question),
+            quote=item["quote"])
+        work["governing_rules"] = governing_rules
+        if not governing_rules and topic_detection_uncertain(
+                item["source_file"], claim=item["claim"],
+                question=str(question), quote=item["quote"],
+                lang=lang):
+            work["governing_uncertain"] = True
+        for rule in governing_rules:
+            gov = {"rule": rule, "job": None,
+                   "evidence": check_evidence(
+                       rule["source_file"], rule["quote"],
+                       raw_dir=raw_dir)}
+            work["governing"].append(gov)
+            if gov["evidence"]["exists"] and gov["evidence"]["found"]:
+                gov_text = extract_text(rule["source_file"],
+                                        raw_dir=raw_dir)
+                gov["job"] = len(jobs)
+                jobs.append((item["claim"], rule["quote"], gov_text))
+
+    def _run_job(job):
+        result = verifier.verify(job[0], job[1], job[2])
+        return (result, verifier.last_usage,
+                verifier.last_latency_s,
+                verifier.last_response_model)
+
+    if len(jobs) > 1:
+        with ThreadPoolExecutor(
+                max_workers=min(4, len(jobs))) as pool:
+            job_results = list(pool.map(_run_job, jobs))
+    else:
+        job_results = [_run_job(job) for job in jobs]
+
+    for work in prepared:
+        item = work["item"]
+        entry = work["entry"]
+        if work["cited_job"] is None:
             _note_refusal(REFUSAL_EVIDENCE_NOT_FOUND)
             trace["claims"].append(entry)
             continue
-        source_text = extract_text(item["source_file"], raw_dir=raw_dir)
-        result = verifier.verify(item["claim"], item["quote"], source_text)
+        (result, _usage, _latency, _rmodel) = job_results[
+            work["cited_job"]]
+        verifier.last_usage = _usage
+        verifier.last_latency_s = _latency
+        verifier.last_response_model = _rmodel
         # Verifier verdict on the cited source: stored unchanged.
         # Governing verdicts go in governing_verdict/governing_reason
         # and are never written over this.
@@ -640,17 +697,10 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         # quote (verbatim English source text) is matched in
         # addition to claim + question, so a Hindi/Hinglish claim
         # citing a superseded source cannot bypass this check.
-        governing_rules = governing_for(
-            item["source_file"],
-            text=item["claim"] + " " + str(question),
-            quote=item["quote"])
-        governing_uncertain = False
-        if not governing_rules and topic_detection_uncertain(
-                item["source_file"], claim=item["claim"],
-                question=str(question), quote=item["quote"],
-                lang=lang):
+        governing_rules = work["governing_rules"]
+        governing_uncertain = work["governing_uncertain"]
+        if governing_uncertain:
             # Fail closed: superseded source, topic uncertain.
-            governing_uncertain = True
             entry["governing_verdict"] = INSUFFICIENT_EVIDENCE
             entry["governing_reason"] = (
                 "Topic detection uncertain for a superseded "
@@ -661,9 +711,9 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         governing_failed = False
         governing_supported = False
         governing_superseded = False
-        for rule in governing_rules:
-            gov_evidence = check_evidence(
-                rule["source_file"], rule["quote"], raw_dir=raw_dir)
+        for gov in work["governing"]:
+            rule = gov["rule"]
+            gov_evidence = gov["evidence"]
             entry["governing_evidence"] = gov_evidence
             entry["governing_source"] = rule["source_file"]
             entry["governing_quote"] = rule["quote"]
@@ -689,18 +739,18 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                 _note_refusal(REFUSAL_GOVERNING_INSUFFICIENT)
                 governing_failed = True
                 break
-            gov_text = extract_text(rule["source_file"], raw_dir=raw_dir)
-            gov_result = verifier.verify(
-                item["claim"], rule["quote"], gov_text)
+            (gov_result, _g_usage, _g_latency,
+             _g_rmodel) = job_results[gov["job"]]
+            verifier.last_usage = _g_usage
+            verifier.last_latency_s = _g_latency
+            verifier.last_response_model = _g_rmodel
             entry["governing_verdict"] = gov_result["verdict"]
             entry["governing_reason"] = gov_result["reason"]
-            entry["governing_verifier_usage"] = verifier.last_usage
-            entry["governing_verifier_latency_s"] = (
-                verifier.last_latency_s)
-            entry["governing_verifier_response_model"] = (
-                verifier.last_response_model)
-            trace["verifier_usage"] = verifier.last_usage
-            trace["verifier_latency_s"] = verifier.last_latency_s
+            entry["governing_verifier_usage"] = _g_usage
+            entry["governing_verifier_latency_s"] = _g_latency
+            entry["governing_verifier_response_model"] = _g_rmodel
+            trace["verifier_usage"] = _g_usage
+            trace["verifier_latency_s"] = _g_latency
             if gov_result["verdict"] == CONTRADICTED:
                 if result["verdict"] == SUPPORTED:
                     # Faithful to its own source; only the governing
