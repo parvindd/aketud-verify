@@ -1305,6 +1305,30 @@ class TestCaseDCallCheck(unittest.TestCase):
         self.assertEqual(guaranteed["verdict"], cc.CONTRADICTS_RULES)
         self.assertEqual(guaranteed["rule"], 1)
 
+    # Exact ASR transcript from a real call (Fix 25).
+    _ASR_TRANSCRIPT = (
+        "Hi, Sash. Uh, I already बोल रहा हूँ और आपकी एक पॉलिसी है "
+        "जो आज लैप्स हो जाएगी, आज ही उसको रिवाइव करना पड़ेगा और "
+        "हमेशा के लिए नहीं तो वो खत्म हो जाएगी. आपके बोनस भी अभी "
+        "पेंडिंग है. रिवाइवल फी दो हज़ार है सर और मैं आपको एक लिंक "
+        "भेज रहा हूँ आप आप उसकी पेमेंट कर दीजिए रिवाइवल गारंटीड है.!")
+
+    def test_fix25_asr_transcript_devanagari_coverage(self):
+        cc = self._callcheck()
+        trace = cc.check_call(self._ASR_TRANSCRIPT)
+        by_kind = {c["kind"]: c for c in trace["claims"]}
+        self.assertEqual(by_kind["irdai_calling"]["rule"], 4)
+        self.assertEqual(by_kind["irdai_calling"]["verdict"],
+                         cc.CONTRADICTS_RULES)
+        self.assertEqual(by_kind["revival_guaranteed"]["rule"], 1)
+        self.assertEqual(by_kind["revival_guaranteed"]["verdict"],
+                         cc.CONTRADICTS_RULES)
+        self.assertEqual(by_kind["payment_link"]["verdict"],
+                         cc.CANNOT_BE_CONFIRMED)
+        self.assertEqual(by_kind["revival_deadline"]["rule"], 2)
+        self.assertEqual(by_kind["revival_fee"]["verdict"],
+                         cc.CANNOT_BE_CONFIRMED)
+
     def test_fix20_keyword_pass_covers_empty_proposer(self):
         cc = self._callcheck()
         trace = cc.check_call(

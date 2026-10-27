@@ -212,14 +212,16 @@ def extract_caller_claims(transcript):
 def _infer_kind(claim_text):
     lowered = str(claim_text or "").lower()
     if any(k in lowered for k in (
-            "guaranteed", "guarantee", "pakka", "गारंटी", "पक्का")):
+            "guaranteed", "guarantee", "pakka", "गारंटी", "पक्का",
+            "गारंटीड")):
         return "revival_guaranteed"
     if any(k in lowered for k in (
-            "fee", "charge", "shulk", "शुल्क", "फीस")):
+            "fee", "charge", "shulk", "शुल्क", "फीस", "फी", "चार्ज")):
         return "revival_fee"
     if "link" in lowered or "लिंक" in lowered:
         return "payment_link"
-    if "irdai" in lowered or "bonus" in lowered or "बोनस" in lowered:
+    if "irdai" in lowered or "bonus" in lowered or "बोनस" in lowered \
+            or "आईआरडीएआई" in lowered or "इरडा" in lowered:
         return "irdai_calling"
     if any(k in lowered for k in ("today", "forever", "aaj", "turant")):
         return "revival_deadline"
@@ -232,13 +234,16 @@ def _infer_kind(claim_text):
 # Flags every rule-checkable sentence the proposer did not extract.
 _KEYWORD_GROUPS = (
     ("revival_guaranteed", 1, None,
-     ("guaranteed", "guarantee", "pakka", "pakki", "गारंटी", "पक्का")),
+     ("guaranteed", "guarantee", "pakka", "pakki", "गारंटी", "पक्का",
+      "गारंटीड")),
     ("revival_fee", 3, None,
-     ("fee", "charge", "charges", "shulk", "शुल्क", "फीस")),
+     ("fee", "charge", "charges", "shulk", "शुल्क", "फीस", "फी",
+      "चार्ज")),
     ("irdai_calling", 4, None,
-     ("irdai", "bonus", "बोनस", "आईआरडीएआई")),
+     ("irdai", "bonus", "बोनस", "आईआरडीएआई", "इरडा", "पेंडिंग")),
     ("revival_deadline", 2, None,
-     ("aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त")),
+     ("aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त",
+      "रिवाइवल", "लैप्स")),
     ("payment_link", 1, None, ("link", "लिंक")),
 )
 
@@ -259,7 +264,8 @@ def _classify_sentence_all(sentence, product):
     lowered = sentence.lower()
     out = []
     if any(k in lowered for k in (
-            "fee", "charge", "charges", "shulk", "शुल्क", "फीस")):
+            "fee", "charge", "charges", "shulk", "शुल्क", "फीस",
+            "फी", "चार्ज")):
         amount = _AMOUNT_RE.search(sentence)
         suffix = " (%s)" % amount.group(0) if amount else ""
         out.append(("revival_fee",
@@ -269,12 +275,14 @@ def _classify_sentence_all(sentence, product):
         out.append(("payment_link",
                     "Caller asks for payment through a link", 1, None))
     if "irdai" in lowered or "bonus" in lowered or "बोनस" in lowered \
-            or "आईआरडीएआई" in lowered:
+            or "आईआरडीएआई" in lowered or "इरडा" in lowered \
+            or "पेंडिंग" in lowered:
         out.append(("irdai_calling",
                     "Caller claims IRDAI is calling about a bonus/policy",
                     4, None))
     if any(k in lowered for k in (
-            "aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त")):
+            "aaj hi", "today", "turant", "आज ही", "तुरंत", "तुरन्त",
+            "रिवाइवल", "लैप्स")):
         scope = ("linked products only" if product == "linked"
                  else "non-linked products only")
         out.append(("revival_deadline",
@@ -282,7 +290,7 @@ def _classify_sentence_all(sentence, product):
                     "it will lapse forever", 2, scope))
     if any(k in lowered for k in (
             "guaranteed", "guarantee", "pakka", "pakki",
-            "गारंटी", "पक्का", "पक्की")):
+            "गारंटी", "पक्का", "पक्की", "गारंटीड")):
         out.append(("revival_guaranteed",
                     "Caller claims revival is guaranteed", 1, None))
     return out
