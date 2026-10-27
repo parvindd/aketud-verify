@@ -1617,7 +1617,9 @@ class TestVoiceTranscribe(unittest.TestCase):
         self.assertEqual(json.loads(request_part[1]), {
             "model": "muse-voice-transcribe-1.0",
             "audioEncoding": "WAV", "mode": "PUSH_TO_TALK",
-            "languageBias": ["hi", "en"]})
+            "languageBias": ["hi", "en"],
+            "keywords": ["IRDAI", "revival", "revive", "bonus",
+                         "lapse", "policy", "premium", "fee"]})
         audio_part = captured["files"]["audio"]
         self.assertEqual(audio_part[0], "call.wav")
         self.assertEqual(audio_part[2], "audio/wav")

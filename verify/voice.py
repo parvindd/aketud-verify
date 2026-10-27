@@ -95,6 +95,8 @@ def transcribe(wav_path, *, timeout=120):
         "audioEncoding": "WAV",
         "mode": "PUSH_TO_TALK",
         "languageBias": ["hi", "en"],
+        "keywords": ["IRDAI", "revival", "revive", "bonus",
+                     "lapse", "policy", "premium", "fee"],
     }
     with path.open("rb") as audio_file:
         files = {
