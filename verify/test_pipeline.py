@@ -231,6 +231,55 @@ class TestAuthority(unittest.TestCase):
             "in force from 1 April 2024")
 
 
+class TestLifeAuthority(unittest.TestCase):
+    def test_rules_1_to_4_present_with_exact_quotes(self):
+        try:
+            from verify.authority import REGISTRY
+        except ImportError:
+            from authority import REGISTRY
+        by_rule = {}
+        for entry in REGISTRY:
+            by_rule.setdefault(entry.get("rule"), []).append(entry)
+        for rule in (1, 2, 3, 4):
+            self.assertIn(rule, by_rule)
+        rule3 = by_rule[3][0]
+        self.assertEqual(rule3["scope"], "linked products only")
+        self.assertEqual(
+            rule3["source_file"], "mc-life-insurance-products-2024.pdf")
+        self.assertIn("without charging any interest or fee",
+                      rule3["quote"])
+        rule4 = by_rule[4][0]
+        # Only the clean span is quoted for rule 4.
+        self.assertEqual(
+            rule4["quote"],
+            "is not involved in activities like selling insurance "
+            "policies, announcing bonus or investment of premiums. "
+            "Public receiving such phone calls are requested to "
+            "lodge a police complaint.")
+        self.assertIn("2019", rule4["citation"])
+
+    def test_life_evidence_and_retrieval(self):
+        try:
+            from verify.authority import REGISTRY
+        except ImportError:
+            from authority import REGISTRY
+        for entry in REGISTRY:
+            if entry.get("rule") is None:
+                continue
+            result = check_evidence(entry["source_file"],
+                                    entry["quote"])
+            self.assertTrue(result["exists"], entry["topic"])
+            self.assertTrue(result["found"], entry["topic"])
+        passages = retrieve("How long to revive a ULIP policy?")
+        self.assertTrue(any(
+            p["source_file"] == "mc-life-insurance-products-2024.pdf"
+            for p in passages))
+        passages = retrieve("IRDAI calling about bonus")
+        self.assertTrue(any(
+            p["source_file"] == "mc-insurance-advertisements-2019.pdf"
+            for p in passages))
+
+
 class TestGroundedProposer(unittest.TestCase):
     def test_retrieve_returns_source_passages(self):
         passages = retrieve("What is the PED waiting period?")

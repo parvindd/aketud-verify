@@ -9,3 +9,4 @@ __pycache__/
 # third-party source PDFs: fetched locally from SOURCES.csv, not redistributed
 health-corpus/raw/*.pdf
 .vscode/
+life-corpus/raw/*.pdf

@@ -20,11 +20,36 @@ import subprocess
 from pathlib import Path
 
 _RAW_DIR = Path(__file__).resolve().parents[1] / "health-corpus" / "raw"
+_RAW_DIRS = (
+    _RAW_DIR,
+    Path(__file__).resolve().parents[1] / "life-corpus" / "raw",
+)
+
+
+def _raw_dirs(raw_dir=None):
+    if raw_dir is not None:
+        return (Path(raw_dir),)
+    return _RAW_DIRS
+
+
+def _resolve(source_file, raw_dir=None):
+    if not source_file:
+        return None
+    for directory in _raw_dirs(raw_dir):
+        candidate = directory / str(source_file)
+        if candidate.is_file():
+            return candidate
+    # Return the first candidate so exists=False reporting is stable.
+    return _raw_dirs(raw_dir)[0] / str(source_file)
 
 
 def _squash(text):
     # Copied from ask.py: whitespace-stripped comparison form.
-    return re.sub(r"\s+", "", str(text)).lower()
+    # Curly quotes are normalised so a straight-quoted citation
+    # matches PDF text extracted with typographic quotes.
+    normalised = str(text).replace("\u201c", '"').replace(
+        "\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    return re.sub(r"\s+", "", normalised).lower()
 
 
 def _pdf_text(pdf_path):
@@ -43,10 +68,8 @@ def _pdf_text(pdf_path):
 
 def extract_text(source_file, *, raw_dir=None):
     """Return extracted text for ``source_file``, or None if unavailable."""
-    if raw_dir is None:
-        raw_dir = _RAW_DIR
-    pdf_path = Path(raw_dir) / str(source_file)
-    if not pdf_path.is_file():
+    pdf_path = _resolve(source_file, raw_dir)
+    if pdf_path is None or not pdf_path.is_file():
         return None
     return _pdf_text(pdf_path)
 
@@ -60,9 +83,7 @@ def check_evidence(source_file, quote, *, raw_dir=None):
     a missing file, failed extraction, or empty quote gives
     ``found=False``.
     """
-    if raw_dir is None:
-        raw_dir = _RAW_DIR
-    pdf_path = Path(raw_dir) / str(source_file) if source_file else None
+    pdf_path = _resolve(source_file, raw_dir)
     exists = bool(pdf_path is not None and pdf_path.is_file())
     if not exists:
         return {"exists": False, "found": False, "page_text_hash": None}

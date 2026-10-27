@@ -27,6 +27,43 @@ _PED_QUOTE = (
     "coverage under the Health Insurance policy."
 )
 
+# Case D life rules: exact quotes from life-corpus/CASE_D_RULES.md
+# (read from life-corpus/raw/ PDFs, 27 Oct 2026). Only the clean
+# span is quoted for rule 4.
+_LIFE_REGULATIONS = "irdai-insurance-products-regulations-2024.pdf"
+_LIFE_MASTER = "mc-life-insurance-products-2024.pdf"
+_ADVERTISEMENTS_2019 = "mc-insurance-advertisements-2019.pdf"
+
+_RULE1_QUOTE = (
+    '"Revival of a policy" means restoration of the policy, which '
+    "was discontinued due to the non-payment of premium, by the "
+    "insurer with all the benefits mentioned in the policy document, "
+    "with or without rider benefits if any, upon the receipt of all "
+    "the premiums due and other charges or late fee if any, during "
+    "the revival period, as per the terms and conditions of the "
+    "policy, upon being satisfied as to the continued insurability "
+    "of the insured or policyholder on the basis of the information, "
+    "documents and reports furnished by the policyholder, in "
+    "accordance with Board approved underwriting policy."
+)
+_RULE2_LINKED_QUOTE = (
+    '"Revival period" means the period of three consecutive '
+    "complete years from the date of first unpaid premium."
+)
+_RULE2_NONLINKED_QUOTE = (
+    '"Revival period" means the period of five consecutive '
+    "complete years from the date of first unpaid premium."
+)
+_RULE3_QUOTE = (
+    "shall collect all due and unpaid premiums without charging "
+    "any interest or fee"
+)
+_RULE4_QUOTE = (
+    "is not involved in activities like selling insurance policies, "
+    "announcing bonus or investment of premiums. Public receiving "
+    "such phone calls are requested to lodge a police complaint."
+)
+
 REGISTRY = [
     {
         "topic": "PED waiting period",
@@ -40,6 +77,89 @@ REGISTRY = [
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
         "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
+    },
+    {
+        "rule": 1,
+        "topic": "life revival by insurer underwriting",
+        "source_file": _LIFE_REGULATIONS,
+        "quote": _RULE1_QUOTE,
+        "issuer": "IRDAI",
+        "effective_date": "2024-04-01",
+        "published": "2024-03-22",
+        "signed": "2024-03-20",
+        "gazette": "Gazette No. 206",
+        "supersedes": [],
+        "scope": "life policies",
+        "citation": (
+            "IRDAI (Insurance Products) Regulations, 2024, "
+            "Schedule I, 1.10"),
+    },
+    {
+        "rule": 2,
+        "topic": "life revival period linked",
+        "source_file": _LIFE_REGULATIONS,
+        "quote": _RULE2_LINKED_QUOTE,
+        "value": "three years",
+        "extracted_value": "three consecutive complete years",
+        "issuer": "IRDAI",
+        "effective_date": "2024-04-01",
+        "published": "2024-03-22",
+        "signed": "2024-03-20",
+        "gazette": "Gazette No. 206",
+        "supersedes": [],
+        "scope": "linked products only",
+        "citation": (
+            "IRDAI (Insurance Products) Regulations, 2024, "
+            "Schedule I, 1.28"),
+    },
+    {
+        "rule": 2,
+        "topic": "life revival period non-linked",
+        "source_file": _LIFE_REGULATIONS,
+        "quote": _RULE2_NONLINKED_QUOTE,
+        "value": "five years",
+        "extracted_value": "five consecutive complete years",
+        "issuer": "IRDAI",
+        "effective_date": "2024-04-01",
+        "published": "2024-03-22",
+        "signed": "2024-03-20",
+        "gazette": "Gazette No. 206",
+        "supersedes": [],
+        "scope": "non-linked products only",
+        "citation": (
+            "IRDAI (Insurance Products) Regulations, 2024, "
+            "Schedule I, 1.39"),
+    },
+    {
+        "rule": 3,
+        "topic": "linked revival no interest or fee",
+        "source_file": _LIFE_MASTER,
+        "quote": _RULE3_QUOTE,
+        "issuer": "IRDAI",
+        "effective_date": "2024-06-12",
+        "published": "2024-06-12",
+        "supersedes": [],
+        "scope": "linked products only",
+        "citation": (
+            "Master Circular on Life Insurance Products, "
+            "12 June 2024, Part C, para 40"),
+    },
+    {
+        "rule": 4,
+        "topic": "IRDAI does not sell policies or announce bonus",
+        "source_file": _ADVERTISEMENTS_2019,
+        "quote": _RULE4_QUOTE,
+        "issuer": "IRDAI",
+        "effective_date": "2019-10-16",
+        "published": "2019-10-16",
+        "supersedes": [],
+        "scope": "public notice on spurious calls (2019)",
+        "citation": (
+            "Master Circular on Insurance Advertisements, "
+            "16 Oct 2019, para 15"),
+        "status_note": (
+            "2019 date; status after 2024 consolidation "
+            "NOT confirmed"),
     },
 ]
 
@@ -136,6 +256,13 @@ _TITLES = {
     ),
     "master-circular-health-2024.pdf": (
         "Master Circular on Health Insurance Business, 29 May 2024"
+    ),
+    "mc-life-insurance-products-2024.pdf": (
+        "Master Circular on Life Insurance Products, 12 June 2024"
+    ),
+    "mc-insurance-advertisements-2019.pdf": (
+        "Master Circular on Insurance Advertisements, "
+        "16 Oct 2019 (IRDAI/LIFE/CIR/MISC/189/10/2019)"
     ),
 }
 
