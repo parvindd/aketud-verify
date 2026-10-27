@@ -164,6 +164,15 @@ def _extract_value(text):
     return " ".join(match.group(1).split()) if match else None
 
 
+def _hindi_value(value):
+    """Render a duration value in Hindi (e.g. 36 months -> 36 महीने)."""
+    if not value:
+        return value
+    text = str(value)
+    text = text.replace("months", "महीने").replace("month", "महीना")
+    return text
+
+
 def _is_ped_text(*texts):
     combined = " ".join(str(t) for t in texts if t).lower()
     return any(k in combined for k in (
@@ -192,7 +201,7 @@ def _build_verified(entries, lang="en"):
                 parts.append(
                     "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड "
                     "अधिकतम %s है। (Source: %s)"
-                    % (value, e["source_file"]))
+                    % (_hindi_value(value), e["source_file"]))
             else:
                 parts.append(
                     "Pre-existing disease ke liye waiting period "
@@ -217,9 +226,10 @@ def _build_superseded(records, lang="en"):
                 "वर्तमान नियम: प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए "
                 "वेटिंग पीरियड अधिकतम %s है (%s)। %s में अभी भी "
                 "%s कहा गया है, लेकिन आईआरडीएआई का 2024 नियम इसे "
-                "रद्द करता है."
-                % (rec["governing_value"], rec["governing_title"],
-                   rec["cited_title"], rec["cited_value"]))
+                "ओवरराइड करता है."
+                % (_hindi_value(rec["governing_value"]),
+                   rec["governing_title"],
+                   rec["cited_title"], _hindi_value(rec["cited_value"])))
         elif lang == "hinglish":
             sentence = (
                 "Ab ka rule: Pre-existing disease ke liye waiting "
@@ -247,7 +257,7 @@ def _build_corrected(records, lang="en"):
                     "वेटिंग पीरियड के लिए शासी स्रोत (%s) के अनुसार "
                     "अधिकतम %s है।\n%s" % (
                         rec["governing_title"],
-                        rec["governing_value"],
+                        _hindi_value(rec["governing_value"]),
                         rec["governing_quote"]))
             elif lang == "hinglish":
                 parts.append(
@@ -266,7 +276,8 @@ def _build_corrected(records, lang="en"):
             if lang == "hi":
                 parts.append(
                     "उद्धृत स्रोत (%s) के अनुसार अधिकतम %s है।\n%s"
-                    % (rec["cited_title"], rec["value"], rec["quote"]))
+                    % (rec["cited_title"], _hindi_value(rec["value"]),
+                       rec["quote"]))
             elif lang == "hinglish":
                 parts.append(
                     "Cited source (%s) ke anusar maximum %s hai.\n%s"

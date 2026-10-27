@@ -430,7 +430,9 @@ class TestPipelineScenarios(unittest.TestCase):
         self.assertEqual(trace["claims"][0]["verdict"], SUPPORTED)
         self.assertEqual(
             trace["claims"][0]["governing_verdict"], CONTRADICTED)
-        self.assertIn("36 months", trace["final_answer"])
+        self.assertIn("36 महीने", trace["final_answer"])
+        self.assertIn("ओवरराइड करता है", trace["final_answer"])
+        self.assertNotIn("रद्द करता है", trace["final_answer"])
 
     def test_fix14_hinglish_claim_arogya48_is_superseded(self):
         # No English PED keyword and no Devanagari keyword in the
@@ -746,10 +748,11 @@ class TestAnswerLanguage(unittest.TestCase):
         self.assertEqual(
             trace["final_answer"],
             "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड अधिकतम "
-            "36 months है। (Source: "
+            "36 महीने है। (Source: "
             "irdai-insurance-products-regulations-2024.pdf)")
         self.assertIn("वेटिंग पीरियड", trace["final_answer"])
-        self.assertIn("36 months", trace["final_answer"])
+        self.assertIn("36 महीने", trace["final_answer"])
+        self.assertNotIn("36 months", trace["final_answer"])
 
     def test_fix15_a_hinglish_verified_template(self):
         trace = answer(
@@ -810,8 +813,11 @@ class TestAnswerLanguage(unittest.TestCase):
         self.assertIn("वेटिंग पीरियड", msg)
         self.assertIn("प्री-एग्ज़िस्टिंग डिज़ीज़", msg)
         self.assertIn("आईआरडीएआई", msg)
-        self.assertIn("36 months", msg)
-        self.assertIn("48 months", msg)
+        self.assertIn("36 महीने", msg)
+        self.assertIn("48 महीने", msg)
+        self.assertIn("ओवरराइड करता है", msg)
+        self.assertNotIn("रद्द करता है", msg)
+        self.assertNotIn("36 months है", msg)
         self.assertIn(PED_QUOTE, msg)  # quote stays English
         self.assertIn(
             "IRDAI (Insurance Products) Regulations, 2024", msg)
