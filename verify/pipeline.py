@@ -47,14 +47,15 @@ import os
 import re
 
 try:
-    from verify.authority import (REGISTRY, governing_for, governing_title,
+    from verify.authority import (REGISTRY, effective_display,
+                                  governing_for, governing_title,
                                   source_title)
     from verify.evidence import check_evidence, extract_text
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend)
 except ImportError:  # run as top-level modules (cd verify; unittest)
-    from authority import (REGISTRY, governing_for, governing_title,
-                           source_title)
+    from authority import (REGISTRY, effective_display, governing_for,
+                           governing_title, source_title)
     from evidence import check_evidence, extract_text
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend)
@@ -445,6 +446,10 @@ def answer(question, lang="en", *, proposer=None, verifier=None,
                 rule["source_file"])
             entry["governing_effective_date"] = rule.get(
                 "effective_date")
+            entry["governing_effective_display"] = (
+                effective_display(rule))
+            entry["governing_published"] = rule.get("published")
+            entry["governing_signed"] = rule.get("signed")
             entry["governing_value"] = (
                 rule.get("value") or rule.get("extracted_value")
                 or _extract_value(rule["quote"]))

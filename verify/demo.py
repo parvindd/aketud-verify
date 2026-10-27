@@ -20,8 +20,10 @@ import sys
 from pathlib import Path
 
 try:
+    from verify.authority import effective_display
     from verify.pipeline import answer as _pipeline_answer
 except ImportError:  # run as top-level module (cd verify)
+    from authority import effective_display
     from pipeline import answer as _pipeline_answer
 
 _RESET = "\033[0m"
@@ -214,11 +216,13 @@ def format_trace(trace, *, color=False, raw=False):
         if not (claim.get("governing_source")
                 or claim.get("governing_verdict")):
             continue
+        display = (claim.get("governing_effective_display")
+                   or effective_display(
+                       claim.get("governing_effective_date", "")))
         lines.append(
-            "Claim %d: governing source %s (%s, effective %s)"
+            "Claim %d: governing source %s (%s, %s)"
             % (idx, claim.get("governing_source", ""),
-               claim.get("governing_title", ""),
-               claim.get("governing_effective_date", "")))
+               claim.get("governing_title", ""), display))
         gov_ev = claim.get("governing_evidence") or {}
         gov_found = bool(gov_ev.get("exists") and gov_ev.get("found"))
         lines.append("  Governing evidence: %s"

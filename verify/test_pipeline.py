@@ -206,6 +206,24 @@ class TestAuthority(unittest.TestCase):
         self.assertEqual([r["source_file"] for r in rules], [PRODUCTS])
         self.assertEqual(governing_for(PRODUCTS), [])
 
+    def test_ped_rule_dates_and_displayed_date(self):
+        try:
+            from verify.authority import REGISTRY, effective_display
+        except ImportError:
+            from authority import REGISTRY, effective_display
+        first = REGISTRY[0]
+        self.assertEqual(first["effective_date"], "2024-04-01")
+        self.assertEqual(first["published"], "2024-03-22")
+        self.assertEqual(first["signed"], "2024-03-20")
+        self.assertIn("206", first["gazette"])
+        # Displayed date is the in-force (effective) date,
+        # not the published or signed date.
+        self.assertEqual(
+            effective_display(first), "in force from 1 April 2024")
+        self.assertEqual(
+            effective_display(first["effective_date"]),
+            "in force from 1 April 2024")
+
 
 class TestGroundedProposer(unittest.TestCase):
     def test_retrieve_returns_source_passages(self):
@@ -728,6 +746,27 @@ class TestDemo(unittest.TestCase):
         self.assertNotIn("SUPERSEDED", s4)
         self.assertIn("CONTRADICTED", s5)
         self.assertIn("SUPERSEDED", s6)
+
+    def test_format_trace_shows_in_force_from_1_april_2024(self):
+        demo = self._demo()
+
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({
+                    "verdict": CONTRADICTED,
+                    "reason": "Governing passage caps PED at 36 months."})
+            return json.dumps(
+                {"verdict": SUPPORTED, "reason": "Arogya says 48."})
+
+        draft = {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+        trace = answer("What is the PED waiting period?",
+                       proposer=fake_proposer(draft), verifier=backend)
+        self.assertEqual(
+            trace["claims"][0]["governing_effective_date"], "2024-04-01")
+        text = demo.format_trace(trace, color=False)
+        self.assertIn("in force from 1 April 2024", text)
 
     def test_format_trace_refused_shows_reason_and_message(self):
         demo = self._demo()

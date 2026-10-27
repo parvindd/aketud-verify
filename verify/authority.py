@@ -3,7 +3,13 @@
 A small registry of governing rules. Each entry is::
 
     {topic, source_file, quote, issuer, effective_date,
+     published, signed, gazette,
      supersedes: [source_file, ...]}
+
+``effective_date`` is the date the rule is in force from;
+``published`` is its Gazette publication date and ``signed``
+the date it was signed. These are distinct dates and must not
+be conflated.
 
 When a claim's source is superseded on a topic, the governing
 passage takes precedence over the claim's own source: the pipeline
@@ -29,13 +35,51 @@ REGISTRY = [
         "value": "36 months",
         "extracted_value": "36 months",
         "issuer": "IRDAI",
-        "effective_date": "2024-03-22",
+        "effective_date": "2024-04-01",
+        "published": "2024-03-22",
+        "signed": "2024-03-20",
+        "gazette": "Gazette No. 206",
         "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
     },
 ]
 
 # Alias: the registry under a second common name.
 RULES = REGISTRY
+
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _format_iso_date(iso_date):
+    """Format ``YYYY-MM-DD`` as e.g. ``1 April 2024``."""
+    try:
+        year, month, day = str(iso_date).split("-")
+        return "%d %s %d" % (
+            int(day), _MONTH_NAMES[int(month) - 1], int(year))
+    except (ValueError, IndexError, AttributeError):
+        return str(iso_date)
+
+
+def effective_display(rule):
+    """Human-readable in-force display for ``rule``.
+
+    Accepts a registry entry (dict) or an ISO date string and
+    returns e.g. ``"in force from 1 April 2024"`` for the PED
+    rule (``effective_date`` 2024-04-01). This is the displayed
+    date: it uses ``effective_date``, never ``published`` or
+    ``signed``.
+    """
+    iso = rule.get("effective_date") if isinstance(rule, dict) else rule
+    if not iso:
+        return ""
+    return "in force from %s" % _format_iso_date(iso)
+
+
+# Aliases for discoverability.
+display_effective_date = effective_display
+in_force_display = effective_display
 
 # Topic keywords used to decide whether a governing rule is on-topic
 # for a claim. A superseded source may cover many topics; only a
