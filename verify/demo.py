@@ -265,6 +265,64 @@ def main(argv=None, stream=None):
     stream = stream if stream is not None else sys.stdout
     raw = "--raw" in args
     args = [a for a in args if a != "--raw"]
+    # Call-check mode (Fix 18): --call "<transcript>" [--lang ...]
+    call_transcript = None
+    rest = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--call":
+            if idx + 1 >= len(args):
+                print('Usage: python -m verify.demo --call '
+                      '"<transcript>" [--lang en|hi|hinglish]',
+                      file=sys.stderr)
+                return 2
+            call_transcript = args[idx + 1]
+            idx += 2
+            continue
+        if arg.startswith("--call="):
+            call_transcript = arg[len("--call="):]
+            idx += 1
+            continue
+        rest.append(arg)
+        idx += 1
+    args = rest
+    if call_transcript is not None:
+        lang_args = []
+        filtered = []
+        idx = 0
+        while idx < len(args):
+            if args[idx] == "--lang" and idx + 1 < len(args):
+                lang_args = [args[idx + 1]]
+                idx += 2
+                continue
+            if args[idx].startswith("--lang="):
+                lang_args = [args[idx][len("--lang="):]]
+                idx += 1
+                continue
+            filtered.append(args[idx])
+            idx += 1
+        if filtered:
+            print('Usage: python -m verify.demo --call '
+                  '"<transcript>" [--lang en|hi|hinglish]',
+                  file=sys.stderr)
+            return 2
+        call_lang = lang_args[0] if lang_args else None
+        if call_lang is not None and call_lang not in _LANGS:
+            print('Usage: python -m verify.demo --call '
+                  '"<transcript>" [--lang en|hi|hinglish]',
+                  file=sys.stderr)
+            return 2
+        call_lang = resolve_lang(call_lang, call_transcript)
+        load_env()
+        try:
+            from verify.callcheck import check_call, format_call_trace
+        except ImportError:
+            from callcheck import check_call, format_call_trace
+        trace = check_call(call_transcript, lang=call_lang)
+        print(format_call_trace(
+            trace, color=supports_color(stream)), file=stream)
+        return 0
     lang = None
     filtered = []
     idx = 0
