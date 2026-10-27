@@ -1469,5 +1469,183 @@ class TestCaseDCallCheck(unittest.TestCase):
                 ["--lang", "fr", "Bonjour?"], stream=io.StringIO()), 2)
 
 
+class _FakeAsrResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _write_wav(path, *, channels=1, sampwidth=2, rate=16000, frames=160):
+    import wave as wave_mod
+    with wave_mod.open(str(path), "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sampwidth)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00" * (channels * sampwidth * frames))
+
+
+def _stub_asr_requests(captured, payload):
+    fake = types.ModuleType("requests")
+
+    def post(url, headers=None, files=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["files"] = files
+        captured["timeout"] = timeout
+        return _FakeAsrResponse(payload)
+
+    fake.post = post
+    return fake
+
+
+class TestVoiceTranscribe(unittest.TestCase):
+    """Fix 23 voice transcription tests (offline, HTTP mocked)."""
+
+    def _voice(self):
+        try:
+            import verify.voice as voice
+        except ImportError:
+            import voice
+        return voice
+
+    _ASR_PAYLOAD = {
+        "audioDurationMs": 1000, "sessionId": "test-session",
+        "transcript": "Revive today or lapse forever",
+        "turns": [],
+    }
+
+    def test_transcribe_posts_multipart_and_reads_transcript(self):
+        voice = self._voice()
+        captured = {}
+        env = {"META_API_KEY": "test-key",
+               "META_API_BASE_URL": "https://example.invalid/v1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "call.wav"
+            _write_wav(wav_path)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.dict(sys.modules, {
+                        "requests": _stub_asr_requests(
+                            captured, self._ASR_PAYLOAD)}):
+                text = voice.transcribe(wav_path)
+        self.assertEqual(text, "Revive today or lapse forever")
+        self.assertEqual(
+            captured["url"], "https://example.invalid/v1/asr/transcribe")
+        self.assertEqual(captured["headers"]["Accept"],
+                         "application/json")
+        self.assertEqual(captured["headers"]["Authorization"],
+                         "Bearer test-key")
+        request_part = captured["files"]["request"]
+        self.assertEqual(request_part[2], "application/json")
+        self.assertEqual(json.loads(request_part[1]), {
+            "model": "muse-voice-transcribe-1.0",
+            "audioEncoding": "WAV", "mode": "PUSH_TO_TALK",
+            "languageBias": ["hi", "en"]})
+        audio_part = captured["files"]["audio"]
+        self.assertEqual(audio_part[0], "call.wav")
+        self.assertEqual(audio_part[2], "audio/wav")
+
+    def test_transcribe_accepts_24khz_mono_16bit(self):
+        voice = self._voice()
+        captured = {}
+        env = {"META_API_KEY": "k",
+               "META_API_BASE_URL": "https://example.invalid"}
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "call.wav"
+            _write_wav(wav_path, rate=24000)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.dict(sys.modules, {
+                        "requests": _stub_asr_requests(
+                            captured, self._ASR_PAYLOAD)}):
+                self.assertEqual(
+                    voice.transcribe(wav_path),
+                    "Revive today or lapse forever")
+
+    def test_transcribe_refuses_bad_wav_before_http(self):
+        voice = self._voice()
+        captured = {}
+        env = {"META_API_KEY": "k",
+               "META_API_BASE_URL": "https://example.invalid"}
+        cases = [
+            ({"channels": 2}, "mono"),
+            ({"sampwidth": 1}, "16-bit"),
+            ({"rate": 44100}, "16 kHz or 24 kHz"),
+            ({"rate": 8000}, "16 kHz or 24 kHz"),
+        ]
+        for kwargs, needle in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                wav_path = Path(tmp) / "call.wav"
+                _write_wav(wav_path, **kwargs)
+                with mock.patch.dict(os.environ, env), \
+                        mock.patch.dict(sys.modules, {
+                            "requests": _stub_asr_requests(
+                                captured, self._ASR_PAYLOAD)}):
+                    with self.assertRaises(ValueError) as ctx:
+                        voice.transcribe(wav_path)
+                self.assertIn(needle, str(ctx.exception))
+                self.assertIn("Refusing to transcribe",
+                              str(ctx.exception))
+        self.assertNotIn("url", captured)
+        with self.assertRaises(ValueError):
+            voice.transcribe("/nonexistent/call.wav")
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "call.wav"
+            bad.write_bytes(b"not a wav")
+            with self.assertRaises(ValueError):
+                voice.transcribe(bad)
+
+    def test_transcribe_missing_transcript_field_fails(self):
+        voice = self._voice()
+        captured = {}
+        env = {"META_API_KEY": "k",
+               "META_API_BASE_URL": "https://example.invalid"}
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "call.wav"
+            _write_wav(wav_path)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.dict(sys.modules, {
+                        "requests": _stub_asr_requests(
+                            captured, {"sessionId": "x", "turns": []})}):
+                with self.assertRaises(RuntimeError) as ctx:
+                    voice.transcribe(wav_path)
+        self.assertIn("transcript", str(ctx.exception))
+
+    def test_demo_call_audio_shows_stage0_then_callcheck(self):
+        demo = TestDemo()._demo()
+        voice = self._voice()
+        transcript = TestCaseDCallCheck._HINGLISH
+        stream = io.StringIO()
+        with mock.patch.object(voice, "transcribe",
+                               return_value=transcript) as mock_tr:
+            self.assertEqual(demo.main(
+                ["--call-audio", "call.wav", "--lang", "hinglish"],
+                stream=stream), 0)
+        mock_tr.assert_called_once_with("call.wav")
+        out = stream.getvalue()
+        self.assertIn("Stage 0 — Muse Voice Transcribe", out)
+        self.assertIn(transcript, out)
+        self.assertIn("Stage 1 — Call transcript", out)
+        self.assertIn("Rules ke khilaf", out)
+        self.assertTrue(out.rstrip().endswith(
+            "Caller ke bheje hue link se payment na karein."))
+
+    def test_demo_call_audio_transcription_failure_returns_1(self):
+        demo = TestDemo()._demo()
+        voice = self._voice()
+        with mock.patch.object(
+                voice, "transcribe",
+                side_effect=ValueError(
+                    "Refusing to transcribe x.wav: WAV must be mono")):
+            self.assertEqual(demo.main(
+                ["--call-audio", "x.wav"], stream=io.StringIO()), 1)
+        self.assertEqual(demo.main(
+            ["--call-audio", "x.wav", "extra question"],
+            stream=io.StringIO()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

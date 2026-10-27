@@ -259,6 +259,14 @@ def format_trace(trace, *, color=False, raw=False):
     return "\n".join(lines)
 
 
+def format_voice_stage(transcript, *, color=False):
+    """Render Stage 0 — Muse Voice Transcribe for ``transcript``."""
+    lines = []
+    _stage(lines, 0, "Muse Voice Transcribe", color)
+    lines.append(str(transcript or ""))
+    return "\n".join(lines)
+
+
 def _build_parser():
     import argparse
 
@@ -270,6 +278,7 @@ def _build_parser():
     parser.add_argument("--raw", action="store_true")
     parser.add_argument("--lang", choices=_LANGS, default=None)
     parser.add_argument("--call", dest="call", default=None)
+    parser.add_argument("--call-audio", dest="call_audio", default=None)
     parser.add_argument("question", nargs="*")
     return parser
 
@@ -283,9 +292,38 @@ def main(argv=None, stream=None):
     except SystemExit:
         print('Usage: python -m verify.demo [--raw] '
               '[--lang en|hi|hinglish] "<question>" | '
-              '--call "<transcript>" [--lang en|hi|hinglish]',
+              '--call "<transcript>" [--lang en|hi|hinglish] | '
+              '--call-audio <call.wav> [--lang en|hi|hinglish]',
               file=sys.stderr)
         return 2
+    if parsed.call_audio is not None:
+        if parsed.question or parsed.call is not None:
+            print('Usage: python -m verify.demo --call-audio '
+                  '<call.wav> [--lang en|hi|hinglish]',
+                  file=sys.stderr)
+            return 2
+        load_env()
+        try:
+            from verify.voice import transcribe
+        except ImportError:
+            from voice import transcribe
+        try:
+            transcript = transcribe(parsed.call_audio)
+        except Exception as exc:
+            print("Transcription failed: %s" % exc, file=sys.stderr)
+            return 1
+        call_lang = resolve_lang(parsed.lang, transcript)
+        try:
+            from verify.callcheck import check_call, format_call_trace
+        except ImportError:
+            from callcheck import check_call, format_call_trace
+        trace = check_call(transcript, lang=call_lang)
+        use_color = supports_color(stream)
+        print(format_voice_stage(transcript, color=use_color),
+              file=stream)
+        print("", file=stream)
+        print(format_call_trace(trace, color=use_color), file=stream)
+        return 0
     if parsed.call is not None:
         if parsed.question:
             print('Usage: python -m verify.demo --call '

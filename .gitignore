@@ -10,3 +10,6 @@ __pycache__/
 health-corpus/raw/*.pdf
 .vscode/
 life-corpus/raw/*.pdf
+# call recordings — not committed
+*.wav
+*.m4a
