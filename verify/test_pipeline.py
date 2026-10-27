@@ -1433,7 +1433,7 @@ class TestCaseDCallCheck(unittest.TestCase):
         self.assertNotIn("नियमों के विपरीत",
                          hinglish_trace["final_block"])
         self.assertIn("Revival period pehle unpaid premium se "
-                      "5 years (non-linked) or 3 years (linked)",
+                      "5 years (non-linked) ya 3 years (linked)",
                       hinglish_trace["claims"][1]["reason"])
 
     def test_fix22_demo_options_any_order(self):
@@ -1501,6 +1501,79 @@ def _stub_asr_requests(captured, payload):
 
     fake.post = post
     return fake
+
+
+class TestFix23CallcheckPolish(unittest.TestCase):
+    """Fix 23 callcheck polish: Hinglish ya, spaces, final labels."""
+
+    def _callcheck(self):
+        try:
+            import verify.callcheck as callcheck
+        except ImportError:
+            import callcheck
+        return callcheck
+
+    def test_hinglish_reasons_use_ya_not_or(self):
+        cc = self._callcheck()
+        trace = cc.check_call(
+            TestCaseDCallCheck._FULL_TRANSCRIPT, lang="hinglish")
+        for claim in trace["claims"]:
+            self.assertNotIn(" or ", claim["reason"], claim)
+        deadline = [c for c in trace["claims"]
+                    if c["kind"] == "revival_deadline"][0]
+        self.assertIn("5 years (non-linked) ya 3 years (linked)",
+                      deadline["reason"])
+        # English reasons keep "or"; citations stay English.
+        en_trace = cc.check_call(
+            TestCaseDCallCheck._FULL_TRANSCRIPT, lang="en")
+        en_deadline = [c for c in en_trace["claims"]
+                       if c["kind"] == "revival_deadline"][0]
+        self.assertIn("5 years (non-linked) or 3 years (linked)",
+                      en_deadline["reason"])
+
+    def test_no_missing_space_joins_in_outputs(self):
+        cc = self._callcheck()
+        for lang in ("en", "hinglish", "hi"):
+            trace = cc.check_call(
+                TestCaseDCallCheck._FULL_TRANSCRIPT, lang=lang)
+            text = trace["final_block"] + "\n" + cc.format_call_trace(
+                trace)
+            for bad in ("latefee", "Callerke", "PartC",
+                        "hai;product"):
+                self.assertNotIn(bad, text, (lang, bad))
+            self.assertIn("Part C, para 40", text)
+        hinglish = cc.check_call(
+            TestCaseDCallCheck._FULL_TRANSCRIPT, lang="hinglish")
+        self.assertIn("Caller ke bheje hue link", hinglish["final_block"])
+        self.assertIn("product type unknown hai",
+                      [c for c in hinglish["claims"]
+                       if c["kind"] == "revival_fee"][0]["reason"])
+        # Rule 1 quote keeps "late fee" spaced in Stage 2 output.
+        self.assertIn("late fee",
+                      cc.format_call_trace(hinglish))
+
+    def test_final_block_claim_labels_localised(self):
+        cc = self._callcheck()
+        hinglish = cc.check_call(
+            TestCaseDCallCheck._HINGLISH, lang="hinglish")
+        self.assertIn(
+            "Caller ka daava: IRDAI bonus ke baare mein call kar "
+            "raha hai", hinglish["final_block"])
+        self.assertNotIn("Caller claims IRDAI is calling",
+                         hinglish["final_block"])
+        for claim in hinglish["claims"]:
+            self.assertEqual(
+                claim["claim_label"],
+                cc.claim_label(claim, "hinglish"))
+            self.assertTrue(
+                claim["claim_label"].startswith("Caller ka daava:"),
+                claim)
+        hi = cc.check_call(TestCaseDCallCheck._HINGLISH, lang="hi")
+        self.assertIn("कॉलर का दावा:", hi["final_block"])
+        en = cc.check_call(TestCaseDCallCheck._HINGLISH, lang="en")
+        self.assertIn("Caller claims IRDAI is calling",
+                      en["final_block"])
+        self.assertNotIn("Caller ka daava", en["final_block"])
 
 
 class TestVoiceTranscribe(unittest.TestCase):

@@ -366,8 +366,8 @@ def _specific_reason(entry, product="unknown", lang="en"):
                      "cannot be confirmed from the rules."
                      % (plain, product))
     if citation:
-        return "%s (%s)" % (plain, citation)
-    return plain
+        return " ".join((plain.strip(), "(%s)" % citation))
+    return plain.strip()
 
 
 def _semantic_verdict(entry):
@@ -418,6 +418,63 @@ def _normalise_proposer_claims(draft):
                       or (entry or {}).get("scope", "")),
         })
     return out
+
+
+_LOCALISED_CLAIMS = {
+    "hinglish": {
+        "irdai_calling": (
+            "Caller ka daava: IRDAI bonus ke baare mein call kar "
+            "raha hai"),
+        "revival_deadline": (
+            "Caller ka daava: policy aaj hi revive karni hai, "
+            "warna hamesha ke liye lapse ho jayegi"),
+        "revival_guaranteed": (
+            "Caller ka daava: revival guaranteed hai"),
+        "revival_fee": "Caller ka daava: revival fee pay karni hai",
+        "payment_link": (
+            "Caller ka daava: payment is link se karni hai"),
+        "policy_status": (
+            "Caller ka daava: aapki policy ki status tay hai"),
+    },
+    "hi": {
+        "irdai_calling": (
+            "कॉलर का दावा: आईआरडीएआई बोनस के बारे में कॉल कर "
+            "रहा है"),
+        "revival_deadline": (
+            "कॉलर का दावा: पॉलिसी आज ही रिवाइव करनी है, वरना "
+            "हमेशा के लिए लैप्स हो जाएगी"),
+        "revival_guaranteed": "कॉलर का दावा: रिवाइवल की गारंटी है",
+        "revival_fee": "कॉलर का दावा: रिवाइवल फ़ी देनी है",
+        "payment_link": "कॉलर का दावा: पेमेंट इस लिंक से करनी है",
+        "policy_status": "कॉलर का दावा: आपकी पॉलिसी की स्थिति तय है",
+    },
+}
+
+
+def claim_label(claim, lang="en"):
+    """Claim text for the final block, in the chosen language.
+
+    English keeps the extracted claim verbatim; Hinglish/Hindi use
+    a fixed localised label per claim kind (fee amounts preserved).
+    Unknown kinds/languages fall back to the extracted claim.
+    """
+    if isinstance(claim, dict):
+        text = str(claim.get("claim") or "")
+        kind = claim.get("kind") or _infer_kind(text)
+    else:
+        text = str(claim or "")
+        kind = _infer_kind(text)
+    templates = _LOCALISED_CLAIMS.get(lang)
+    if not templates:
+        return text
+    label = templates.get(kind)
+    if not label:
+        return text
+    if kind == "revival_fee":
+        amount = _AMOUNT_RE.search(text)
+        if amount and amount.group(0) not in label:
+            label = "%s (%s)" % (label, amount.group(0))
+    return label
 
 
 def check_call(transcript, lang=None, *, proposer=None, verifier=None,
@@ -510,6 +567,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
 
     for _c in trace["claims"]:
         _c["verdict_label"] = verdict_label(_c.get("verdict", ""), lang)
+        _c["claim_label"] = claim_label(_c, lang)
     lines = []
     if not trace["claims"]:
         lines.append("No caller claims could be checked: %s"
@@ -517,7 +575,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     for idx, claim in enumerate(trace["claims"], 1):
         lines.append("Claim %d: %s — %s" % (
             idx, claim.get("verdict_label", claim["verdict"]),
-            claim["claim"]))
+            claim.get("claim_label", claim["claim"])))
         lines.append("  %s" % (claim.get("reason") or ""))
     trace["final_block"] = "\n".join(lines + [
         "%s: %s" % (_SAFETY_LABEL.get(lang, "Safety advice"),

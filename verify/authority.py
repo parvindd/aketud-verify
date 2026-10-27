@@ -239,7 +239,7 @@ def revival_period_plain(product="unknown", lang="en"):
             return ("Revival period pehle unpaid premium se "
                     "5 years (non-linked) hai.")
         return ("Revival period pehle unpaid premium se "
-                "5 years (non-linked) or 3 years (linked) hai.")
+                "5 years (non-linked) ya 3 years (linked) hai.")
     if product == "linked":
         return ("Revival period is 3 years (linked) from the "
                 "first unpaid premium.")
