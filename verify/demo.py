@@ -16,6 +16,7 @@ the output stream is a terminal that supports it.
 """
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -128,6 +129,33 @@ def _large_decision(decision, colour):
     ]
 
 
+_KNOWN_DISPLAY_JOINS = (
+    (re.compile(r"\btolodge\b", re.I), "to lodge"),
+    (re.compile(r"\blinkse\b", re.I), "link se"),
+)
+
+
+def normalise_display_text(text):
+    """Normalise joined text for display only (Fix 26).
+
+    Inserts a space where text was joined without one: after a
+    comma before a letter, between a letter and a digit (either
+    way), and for known joined phrases (``tolodge`` -> ``to
+    lodge``, ``linkse`` -> ``link se``). Stored trace/evidence
+    data is unchanged.
+    """
+    out = str(text or "")
+    for pattern, replacement in _KNOWN_DISPLAY_JOINS:
+        out = pattern.sub(replacement, out)
+    out = re.sub(r",(?=[A-Za-z])", ", ", out)
+    out = re.sub(r"([A-Za-z])(\d)", r"\1 \2", out)
+    out = re.sub(r"(\d)([A-Za-z])", r"\1 \2", out)
+    return out
+
+
+normalize_display_text = normalise_display_text
+
+
 def _draft_claims(trace):
     claims = trace.get("claims") or []
     if claims:
@@ -201,7 +229,8 @@ def format_trace(trace, *, color=False, raw=False):
         lines.append("  Evidence: %s (exists=%s, found=%s)"
                      % (label, evidence.get("exists"),
                         evidence.get("found")))
-        lines.append("  Quote: %s" % claim.get("quote", ""))
+        lines.append("  Quote: %s" % normalise_display_text(
+            claim.get("quote", "")))
     lines.append("")
 
     stage += 1
@@ -246,7 +275,8 @@ def format_trace(trace, *, color=False, raw=False):
                         claim.get("governing_reason") or ""))
         if claim.get("governing_quote"):
             lines.append("  Governing quote: %s"
-                         % claim["governing_quote"])
+                         % normalise_display_text(
+                             claim["governing_quote"]))
     lines.append("")
 
     stage += 1
@@ -322,7 +352,8 @@ def main(argv=None, stream=None):
         print(format_voice_stage(transcript, color=use_color),
               file=stream)
         print("", file=stream)
-        print(format_call_trace(trace, color=use_color), file=stream)
+        print(format_call_trace(trace, color=use_color,
+                                show_transcript=False), file=stream)
         return 0
     if parsed.call is not None:
         if parsed.question:

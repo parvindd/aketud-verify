@@ -1727,7 +1727,10 @@ class TestVoiceTranscribe(unittest.TestCase):
         out = stream.getvalue()
         self.assertIn("Stage 0 — Muse Voice Transcribe", out)
         self.assertIn(transcript, out)
+        # Fix 26: transcript shown once (Stage 0 only).
+        self.assertEqual(out.count(transcript), 1)
         self.assertIn("Stage 1 — Call transcript", out)
+        self.assertIn("from Stage 0", out)
         self.assertIn("Rules ke khilaf", out)
         self.assertTrue(out.rstrip().endswith(
             "Caller ke bheje hue link se payment na karein."))
@@ -1744,6 +1747,60 @@ class TestVoiceTranscribe(unittest.TestCase):
         self.assertEqual(demo.main(
             ["--call-audio", "x.wav", "extra question"],
             stream=io.StringIO()), 2)
+
+
+class TestFix26DisplayNormalisation(unittest.TestCase):
+    """Fix 26: joined text normalised in displayed quotes/citations."""
+
+    def test_call_trace_normalises_joined_quote_and_citation(self):
+        try:
+            import verify.callcheck as cc
+        except ImportError:
+            import callcheck as cc
+        quote = ("requested tolodge a complaint on the basis of "
+                 "the information,documents furnished")
+        trace = {
+            "transcript": "hello", "lang": "en", "final_block": "",
+            "claims": [{
+                "claim": "Caller claims a fee", "kind": "revival_fee",
+                "rule": 1, "source_file": "x.pdf", "quote": quote,
+                "citation": "Schedule I, 1.39 (non-linked) and1.28 "
+                            "(linked) linkse",
+                "evidence": {"exists": True, "found": True},
+                "verifier_verdict": "CONTRADICTED",
+                "verdict": cc.CONTRADICTS_RULES,
+                "verdict_label": cc.CONTRADICTS_RULES,
+                "reason": "Schedule I, 1.39 and1.28 applies",
+            }],
+        }
+        text = cc.format_call_trace(trace)
+        self.assertIn("to lodge", text)
+        self.assertIn("information, documents", text)
+        self.assertIn("and 1.28", text)
+        self.assertIn("link se", text)
+        for bad in ("tolodge", "information,documents", "and1.28",
+                    "linkse"):
+            self.assertNotIn(bad, text)
+        # Display only: stored quote unchanged.
+        self.assertEqual(trace["claims"][0]["quote"], quote)
+
+    def test_demo_trace_normalises_joined_quote(self):
+        demo = TestDemo()._demo()
+        trace = {
+            "question": "q?", "draft": {"claims": []},
+            "decision": "VERIFIED",
+            "claims": [{
+                "claim": "c", "source_file": "x.pdf",
+                "quote": "requested tolodge it",
+                "evidence": {"exists": True, "found": True},
+                "verifier_verdict": "SUPPORTED",
+            }],
+        }
+        text = demo.format_trace(trace)
+        self.assertIn("to lodge", text)
+        self.assertNotIn("tolodge", text)
+        self.assertEqual(trace["claims"][0]["quote"],
+                         "requested tolodge it")
 
 
 if __name__ == "__main__":

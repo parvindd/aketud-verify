@@ -592,11 +592,41 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     return trace
 
 
-def format_call_trace(trace, *, color=False):
+_KNOWN_DISPLAY_JOINS = (
+    (re.compile(r"\btolodge\b", re.I), "to lodge"),
+    (re.compile(r"\blinkse\b", re.I), "link se"),
+)
+
+
+def normalise_display_text(text):
+    """Normalise joined text for display only (Fix 26).
+
+    Inserts a space where text was joined without one: after a
+    comma before a letter, between a letter and a digit (either
+    way), and for known joined phrases (``tolodge`` -> ``to
+    lodge``, ``linkse`` -> ``link se``). Evidence matching and the
+    stored trace are unchanged; this is applied only when
+    rendering quotes/citations for display.
+    """
+    out = str(text or "")
+    for pattern, replacement in _KNOWN_DISPLAY_JOINS:
+        out = pattern.sub(replacement, out)
+    out = re.sub(r",(?=[A-Za-z])", ", ", out)
+    out = re.sub(r"([A-Za-z])(\d)", r"\1 \2", out)
+    out = re.sub(r"(\d)([A-Za-z])", r"\1 \2", out)
+    return out
+
+
+normalize_display_text = normalise_display_text
+
+
+def format_call_trace(trace, *, color=False, show_transcript=True):
     """Render a call-check trace for the demo CLI."""
+    transcript_line = (str(trace.get("transcript") or "")
+                       if show_transcript else "from Stage 0")
     lines = ["Stage 1 — Call transcript",
              "--------------------------------",
-             str(trace.get("transcript") or ""), "",
+             transcript_line, "",
              "Stage 2 — Caller claims (proposer, not an answer)",
              "---------------------------------------------------"]
     claims = trace.get("claims") or []
@@ -605,8 +635,10 @@ def format_call_trace(trace, *, color=False):
     for idx, claim in enumerate(claims, 1):
         lines.append("%d. %s — rule %s (%s) — %s" % (
             idx, claim.get("claim", ""), claim.get("rule", "?"),
-            claim.get("citation", ""), claim.get("source_file", "")))
-        lines.append("   Quote: %s" % claim.get("quote", ""))
+            normalise_display_text(claim.get("citation", "")),
+            claim.get("source_file", "")))
+        lines.append("   Quote: %s" % normalise_display_text(
+            claim.get("quote", "")))
     lines += ["", "Stage 3 — Evidence check + verifier (per claim)",
               "-----------------------------------------------"]
     if not claims:
@@ -628,7 +660,8 @@ def format_call_trace(trace, *, color=False):
         lines.append("Claim %d: %s" % (
             idx, claim.get("verdict_label",
                            claim.get("verdict", ""))))
-        lines.append("  %s" % (claim.get("reason") or ""))
+        lines.append("  %s" % normalise_display_text(
+            claim.get("reason") or ""))
     lines += ["", "Final block", "-----------",
-              str(trace.get("final_block") or "")]
+              normalise_display_text(trace.get("final_block") or "")]
     return "\n".join(lines)
