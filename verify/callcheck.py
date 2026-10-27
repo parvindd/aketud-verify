@@ -614,23 +614,32 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
 _KNOWN_DISPLAY_JOINS = (
     (re.compile(r"\btolodge\b", re.I), "to lodge"),
     (re.compile(r"\blinkse\b", re.I), "link se"),
+    (re.compile(r"\bwithall\b", re.I), "with all"),
+    (re.compile(r"\bmonthsof\b", re.I), "months of"),
+    (re.compile(r"\bScheduleI\b"), "Schedule I"),
 )
 
 
 def normalise_display_text(text):
-    """Normalise joined text for display only (Fix 26).
+    """Normalise joined text for display only (Fix 26, Fix 29).
 
     Inserts a space where text was joined without one: after a
-    comma before a letter, between a letter and a digit (either
-    way), and for known joined phrases (``tolodge`` -> ``to
-    lodge``, ``linkse`` -> ``link se``). Evidence matching and the
-    stored trace are unchanged; this is applied only when
-    rendering quotes/citations for display.
+    comma before a letter, after a full stop before a capital
+    (``karein.Caller`` -> ``karein. Caller``), between a lowercase
+    and an uppercase letter (``ScheduleI`` -> ``Schedule I``),
+    between a letter and a digit (either way), and for known
+    joined phrases (``tolodge`` -> ``to lodge``, ``linkse`` ->
+    ``link se``, ``withall`` -> ``with all``, ``monthsof`` ->
+    ``months of``). Evidence matching and the stored trace are
+    unchanged; this is applied only when rendering
+    quotes/citations for display.
     """
     out = str(text or "")
     for pattern, replacement in _KNOWN_DISPLAY_JOINS:
         out = pattern.sub(replacement, out)
     out = re.sub(r",(?=[A-Za-z])", ", ", out)
+    out = re.sub(r"(?<=[a-z])\.(?=[A-Z])", ". ", out)
+    out = re.sub(r"([a-z])([A-Z])", r"\1 \2", out)
     out = re.sub(r"([A-Za-z])(\d)", r"\1 \2", out)
     out = re.sub(r"(\d)([A-Za-z])", r"\1 \2", out)
     return out

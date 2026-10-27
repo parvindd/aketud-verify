@@ -2100,6 +2100,60 @@ class TestFix26DisplayNormalisation(unittest.TestCase):
         self.assertEqual(trace["claims"][0]["quote"],
                          "requested tolodge it")
 
+    def test_fix29_remaining_joins_call_and_demo(self):
+        try:
+            import verify.callcheck as cc
+            import verify.demo as demo
+        except ImportError:
+            import callcheck as cc
+            import demo
+        joined = ("ScheduleI withall benefits after 36 monthsof "
+                  "coverage. Check karein.Caller sent it")
+        for func in (cc.normalise_display_text,
+                     demo.normalise_display_text):
+            out = func(joined)
+            for bad in ("ScheduleI", "withall", "karein.Caller",
+                        "monthsof"):
+                self.assertNotIn(bad, out)
+            self.assertIn("Schedule I", out)
+            self.assertIn("with all", out)
+            self.assertIn("karein. Caller", out)
+            self.assertIn("months of", out)
+        # Display only through the call formatter; stored unchanged.
+        trace = {
+            "transcript": "hello", "lang": "en", "final_block": "",
+            "claims": [{
+                "claim": "Caller claims a fee", "kind": "revival_fee",
+                "rule": 1, "source_file": "x.pdf", "quote": joined,
+                "citation": "ScheduleI",
+                "evidence": {"exists": True, "found": True},
+                "verifier_verdict": "CONTRADICTED",
+                "verdict": cc.CONTRADICTS_RULES,
+                "verdict_label": cc.CONTRADICTS_RULES,
+                "reason": joined,
+            }],
+        }
+        text = cc.format_call_trace(trace)
+        for bad in ("ScheduleI", "withall", "karein.Caller",
+                    "monthsof"):
+            self.assertNotIn(bad, text)
+        self.assertEqual(trace["claims"][0]["quote"], joined)
+        demo_trace = {
+            "question": "q?", "draft": {"claims": []},
+            "decision": "VERIFIED",
+            "claims": [{
+                "claim": "c", "source_file": "x.pdf",
+                "quote": joined,
+                "evidence": {"exists": True, "found": True},
+                "verifier_verdict": "SUPPORTED",
+            }],
+        }
+        demo_text = demo.format_trace(demo_trace)
+        for bad in ("ScheduleI", "withall", "karein.Caller",
+                    "monthsof"):
+            self.assertNotIn(bad, demo_text.split("Quote:")[1])
+        self.assertEqual(demo_trace["claims"][0]["quote"], joined)
+
 
 if __name__ == "__main__":
     unittest.main()
