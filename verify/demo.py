@@ -259,112 +259,64 @@ def format_trace(trace, *, color=False, raw=False):
     return "\n".join(lines)
 
 
+def _build_parser():
+    import argparse
+
+    class _Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise SystemExit(2)
+
+    parser = _Parser(prog="python -m verify.demo", add_help=False)
+    parser.add_argument("--raw", action="store_true")
+    parser.add_argument("--lang", choices=_LANGS, default=None)
+    parser.add_argument("--call", dest="call", default=None)
+    parser.add_argument("question", nargs="*")
+    return parser
+
+
 def main(argv=None, stream=None):
     """Run the demo for one question; return an exit code."""
     args = list(sys.argv[1:] if argv is None else argv)
     stream = stream if stream is not None else sys.stdout
-    raw = "--raw" in args
-    args = [a for a in args if a != "--raw"]
-    # Call-check mode (Fix 18): --call "<transcript>" [--lang ...]
-    call_transcript = None
-    rest = []
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--call":
-            if idx + 1 >= len(args):
-                print('Usage: python -m verify.demo --call '
-                      '"<transcript>" [--lang en|hi|hinglish]',
-                      file=sys.stderr)
-                return 2
-            call_transcript = args[idx + 1]
-            idx += 2
-            continue
-        if arg.startswith("--call="):
-            call_transcript = arg[len("--call="):]
-            idx += 1
-            continue
-        rest.append(arg)
-        idx += 1
-    args = rest
-    if call_transcript is not None:
-        lang_args = []
-        filtered = []
-        idx = 0
-        while idx < len(args):
-            if args[idx] == "--lang" and idx + 1 < len(args):
-                lang_args = [args[idx + 1]]
-                idx += 2
-                continue
-            if args[idx].startswith("--lang="):
-                lang_args = [args[idx][len("--lang="):]]
-                idx += 1
-                continue
-            filtered.append(args[idx])
-            idx += 1
-        if filtered:
+    try:
+        parsed = _build_parser().parse_args(args)
+    except SystemExit:
+        print('Usage: python -m verify.demo [--raw] '
+              '[--lang en|hi|hinglish] "<question>" | '
+              '--call "<transcript>" [--lang en|hi|hinglish]',
+              file=sys.stderr)
+        return 2
+    if parsed.call is not None:
+        if parsed.question:
             print('Usage: python -m verify.demo --call '
                   '"<transcript>" [--lang en|hi|hinglish]',
                   file=sys.stderr)
             return 2
-        call_lang = lang_args[0] if lang_args else None
-        if call_lang is not None and call_lang not in _LANGS:
-            print('Usage: python -m verify.demo --call '
-                  '"<transcript>" [--lang en|hi|hinglish]',
-                  file=sys.stderr)
-            return 2
-        call_lang = resolve_lang(call_lang, call_transcript)
+        call_lang = resolve_lang(parsed.lang, parsed.call)
         load_env()
         try:
             from verify.callcheck import check_call, format_call_trace
         except ImportError:
             from callcheck import check_call, format_call_trace
-        trace = check_call(call_transcript, lang=call_lang)
+        trace = check_call(parsed.call, lang=call_lang)
         print(format_call_trace(
             trace, color=supports_color(stream)), file=stream)
         return 0
-    lang = None
-    filtered = []
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--lang":
-            if idx + 1 >= len(args):
-                print('Usage: python -m verify.demo [--raw] '
-                      '[--lang en|hi|hinglish] "<question>"',
-                      file=sys.stderr)
-                return 2
-            lang = args[idx + 1]
-            idx += 2
-            continue
-        if arg.startswith("--lang="):
-            lang = arg[len("--lang="):]
-            idx += 1
-            continue
-        filtered.append(arg)
-        idx += 1
-    args = filtered
-    if lang is not None and lang not in _LANGS:
+    if not parsed.question or not " ".join(parsed.question).strip():
         print('Usage: python -m verify.demo [--raw] '
               '[--lang en|hi|hinglish] "<question>"',
               file=sys.stderr)
         return 2
-    if not args or not " ".join(args).strip():
-        print('Usage: python -m verify.demo [--raw] '
-              '[--lang en|hi|hinglish] "<question>"',
-              file=sys.stderr)
-        return 2
-    question = " ".join(args).strip()
-    lang = resolve_lang(lang, question)
+    question = " ".join(parsed.question).strip()
+    lang = resolve_lang(parsed.lang, question)
     load_env()
-    # Import here so .env is loaded before any default model call.
     try:
         from verify.pipeline import answer
     except ImportError:
         from pipeline import answer
     trace = answer(question, lang=lang)
-    print(format_trace(trace, color=supports_color(stream), raw=raw),
-          file=stream)
+    print(format_trace(trace, color=supports_color(stream),
+                       raw=parsed.raw), file=stream)
     return 0
 
 

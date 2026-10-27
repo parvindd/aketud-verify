@@ -98,6 +98,16 @@ REGISTRY = [
             "insurer is satisfied about continued insurability "
             "under its underwriting policy; revival is not "
             "guaranteed."),
+        "plain_hi": (
+            "रिवाइवल इंश्योरर करता है, और केवल तब जब इंश्योरर "
+            "अपनी अंडरराइटिंग पॉलिसी के तहत कंटिन्यूड "
+            "इंश्योरेबिलिटी से संतुष्ट हो; रिवाइवल की गारंटी "
+            "नहीं है।"),
+        "plain_hinglish": (
+            "Revival insurer karta hai, aur sirf tab jab insurer "
+            "apni underwriting policy ke under continued "
+            "insurability se satisfied ho; revival guaranteed "
+            "nahi hai."),
     },
     {
         "rule": 2,
@@ -158,6 +168,14 @@ REGISTRY = [
             "For linked products, the insurer collects all due "
             "and unpaid premiums without charging any interest "
             "or fee."),
+        "plain_hi": (
+            "लिंक्ड प्रोडक्ट्स के लिए, इंश्योरर सभी ड्यू और "
+            "अनपेड प्रीमियम्स बिना किसी इंटरेस्ट या फ़ी के "
+            "लेता है।"),
+        "plain_hinglish": (
+            "Linked products ke liye, insurer saare due aur "
+            "unpaid premiums bina kisi interest ya fee ke leta "
+            "hai."),
     },
     {
         "rule": 4,
@@ -178,6 +196,14 @@ REGISTRY = [
         "plain": (
             "IRDAI is not involved in selling insurance policies, "
             "announcing bonus or investment of premiums."),
+        "plain_hi": (
+            "आईआरडीएआई इंश्योरेंस पॉलिसीज़ बेचने, बोनस अनाउंस "
+            "करने या प्रीमियम्स के इन्वेस्टमेंट में शामिल नहीं "
+            "है।"),
+        "plain_hinglish": (
+            "IRDAI insurance policies bechne, bonus announce "
+            "karne ya premiums ke investment mein shaamil nahi "
+            "hai."),
     },
 ]
 
@@ -196,6 +222,24 @@ def rule_entry(rule, scope=None):
 
 def revival_period_plain(product="unknown", lang="en"):
     """Plain revival-period statement; both periods if unknown."""
+    if lang == "hi":
+        if product == "linked":
+            return ("रिवाइवल पीरियड पहले अनपेड प्रीमियम से "
+                    "3 साल (लिंक्ड) है।")
+        if product == "non-linked":
+            return ("रिवाइवल पीरियड पहले अनपेड प्रीमियम से "
+                    "5 साल (नॉन-लिंक्ड) है।")
+        return ("रिवाइवल पीरियड पहले अनपेड प्रीमियम से "
+                "5 साल (नॉन-लिंक्ड) या 3 साल (लिंक्ड) है।")
+    if lang == "hinglish":
+        if product == "linked":
+            return ("Revival period pehle unpaid premium se "
+                    "3 years (linked) hai.")
+        if product == "non-linked":
+            return ("Revival period pehle unpaid premium se "
+                    "5 years (non-linked) hai.")
+        return ("Revival period pehle unpaid premium se "
+                "5 years (non-linked) or 3 years (linked) hai.")
     if product == "linked":
         return ("Revival period is 3 years (linked) from the "
                 "first unpaid premium.")
@@ -211,13 +255,13 @@ def rule_plain(entry, lang="en", product="unknown"):
     if not isinstance(entry, dict):
         return ""
     if entry.get("rule") == 2:
-        # Entry scope decides unless product is unknown, in which
-        # case the entry may be the non-linked default: the claim
-        # is about revival period with unknown product, so state
-        # both periods (handled by callers passing product).
         if product == "unknown":
             return revival_period_plain("unknown", lang)
         return revival_period_plain(product, lang)
+    if lang == "hi":
+        return entry.get("plain_hi", entry.get("plain", ""))
+    if lang == "hinglish":
+        return entry.get("plain_hinglish", entry.get("plain", ""))
     return entry.get("plain", "")
 
 _MONTH_NAMES = (

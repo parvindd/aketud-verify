@@ -47,6 +47,49 @@ SAFETY_ADVICE = (
     "pay through links sent by callers."
 )
 
+SAFETY_ADVICE_BY_LANG = {
+    "en": SAFETY_ADVICE,
+    "hinglish": (
+        "Hum aapki policy nahi dekh sakte. Uski status sirf apne "
+        "insurer ke official website/app/branch ya Bima Bharosa se "
+        "check karein. Caller ke bheje hue link se payment na "
+        "karein."),
+    "hi": (
+        "हम आपकी पॉलिसी नहीं देख सकते। इसका स्टेटस सिर्फ़ अपने "
+        "इंश्योरर की ऑफ़िशियल वेबसाइट/ऐप/ब्रांच या बीमा भरोसा से "
+        "चेक करें। कॉलर के भेजे हुए लिंक से पेमेंट न करें।"),
+}
+
+_VERDICT_LABELS = {
+    "en": {
+        SUPPORTED_BY_RULES: SUPPORTED_BY_RULES,
+        CONTRADICTS_RULES: CONTRADICTS_RULES,
+        CANNOT_BE_CONFIRMED: CANNOT_BE_CONFIRMED,
+    },
+    "hinglish": {
+        SUPPORTED_BY_RULES: "Rules se supported",
+        CONTRADICTS_RULES: "Rules ke khilaf",
+        CANNOT_BE_CONFIRMED: "Confirm nahi ho sakta (insurer se poochhein)",
+    },
+    "hi": {
+        SUPPORTED_BY_RULES: "नियमों द्वारा समर्थित",
+        CONTRADICTS_RULES: "नियमों के विपरीत",
+        CANNOT_BE_CONFIRMED: "पुष्टि नहीं हो सकती (इंश्योरर से पूछें)",
+    },
+}
+
+_SAFETY_LABEL = {"en": "Safety advice", "hinglish": "Safety advice",
+                 "hi": "सुरक्षा सलाह"}
+
+
+def verdict_label(verdict, lang="en"):
+    return _VERDICT_LABELS.get(lang, _VERDICT_LABELS["en"]).get(
+        verdict, verdict)
+
+
+def safety_advice_for(lang="en"):
+    return SAFETY_ADVICE_BY_LANG.get(lang, SAFETY_ADVICE)
+
 _DISPLAY = {
     SUPPORTED: SUPPORTED_BY_RULES,
     CONTRADICTED: CONTRADICTS_RULES,
@@ -274,7 +317,7 @@ def keyword_flagged_claims(transcript, existing_claims):
     return out
 
 
-def _specific_reason(entry, product="unknown"):
+def _specific_reason(entry, product="unknown", lang="en"):
     """Plain rule statement + citation from authority (Fix 21)."""
     kind = entry.get("kind") or _infer_kind(entry.get("claim"))
     rule = entry.get("rule")
@@ -284,13 +327,22 @@ def _specific_reason(entry, product="unknown"):
         reg = _rule_entry(rule)
     citation = entry.get("citation") or (reg or {}).get("citation", "")
     if kind == "payment_link":
-        plain = ("No verified rule confirms paying through a link "
-                 "sent by a caller.")
-        return plain
+        if lang == "hi":
+            return ("कॉलर के भेजे लिंक से पेमेंट की कोई सत्यापित "
+                    "नियम पुष्टि नहीं करता।")
+        if lang == "hinglish":
+            return ("Caller ke bheje link se payment ki koi "
+                    "verified rule confirmation nahi karta.")
+        return ("No verified rule confirms paying through a link "
+                "sent by a caller.")
     if kind == "policy_status":
+        if lang == "hi":
+            return "पॉलिसी का अस्तित्व/स्टेटस केवल इंश्योरर जानता है।"
+        if lang == "hinglish":
+            return "Policy ka existence/status sirf insurer jaanta hai."
         return ("Policy existence/status is known only to the "
                 "insurer.")
-    plain = rule_plain(reg, product=product) if reg else ""
+    plain = rule_plain(reg, lang=lang, product=product) if reg else ""
     if kind == "revival_deadline" and product == "unknown":
         citation = (
             "IRDAI (Insurance Products) Regulations, 2024, "
@@ -298,10 +350,21 @@ def _specific_reason(entry, product="unknown"):
     if not plain:
         plain = "The mapped rule does not establish this claim."
     if kind == "revival_fee" and product != "linked":
-        plain = ("%s This no-fee rule covers linked products "
-                 "only; product type is %s, so this fee claim "
-                 "cannot be confirmed from the rules."
-                 % (plain, product))
+        if lang == "hi":
+            plain = ("%s यह नो-फ़ी नियम केवल लिंक्ड प्रोडक्ट्स पर "
+                     "लागू है; प्रोडक्ट टाइप %s है, इसलिए इस फ़ी "
+                     "दावे की नियमों से पुष्टि नहीं हो सकती।"
+                     % (plain, product))
+        elif lang == "hinglish":
+            plain = ("%s Yeh no-fee rule sirf linked products par "
+                     "hai; product type %s hai, isliye is fee claim "
+                     "ki rules se confirmation nahi ho sakti."
+                     % (plain, product))
+        else:
+            plain = ("%s This no-fee rule covers linked products "
+                     "only; product type is %s, so this fee claim "
+                     "cannot be confirmed from the rules."
+                     % (plain, product))
     if citation:
         return "%s (%s)" % (plain, citation)
     return plain
@@ -377,7 +440,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     product = detect_product_type(transcript)
     trace = {"transcript": transcript, "question": transcript,
              "lang": lang, "product_type": product, "claims": [],
-             "safety_advice": SAFETY_ADVICE}
+             "safety_advice": safety_advice_for(lang)}
 
     if proposer is not None:
         try:
@@ -411,24 +474,24 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         # Scope guardrails (fail closed, before any verdict display).
         if kind == "payment_link":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = _specific_reason(entry, product)
+            entry["reason"] = _specific_reason(entry, product, lang)
             trace["claims"].append(entry)
             continue
         if kind == "policy_status":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = _specific_reason(entry, product)
+            entry["reason"] = _specific_reason(entry, product, lang)
             trace["claims"].append(entry)
             continue
         if kind == "revival_fee" and product != "linked":
             entry["verdict"] = CANNOT_BE_CONFIRMED
-            entry["reason"] = _specific_reason(entry, product)
+            entry["reason"] = _specific_reason(entry, product, lang)
             trace["claims"].append(entry)
             continue
         if not (evidence["exists"] and evidence["found"]):
             entry["verdict"] = CANNOT_BE_CONFIRMED
             entry["reason"] = (
                 "%s Evidence check failed (exists=%s, found=%s)."
-                % (_specific_reason(entry, product),
+                % (_specific_reason(entry, product, lang),
                    evidence["exists"], evidence["found"]))
             trace["claims"].append(entry)
             continue
@@ -440,21 +503,25 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             result = _semantic_verdict(entry)
         entry["verifier_verdict"] = result["verdict"]
         entry["verifier_reason"] = result["reason"]
-        entry["reason"] = _specific_reason(entry, product)
+        entry["reason"] = _specific_reason(entry, product, lang)
         entry["verdict"] = _DISPLAY.get(
             result["verdict"], CANNOT_BE_CONFIRMED)
         trace["claims"].append(entry)
 
+    for _c in trace["claims"]:
+        _c["verdict_label"] = verdict_label(_c.get("verdict", ""), lang)
     lines = []
     if not trace["claims"]:
         lines.append("No caller claims could be checked: %s"
-                     % CANNOT_BE_CONFIRMED)
+                     % verdict_label(CANNOT_BE_CONFIRMED, lang))
     for idx, claim in enumerate(trace["claims"], 1):
         lines.append("Claim %d: %s — %s" % (
-            idx, claim["verdict"], claim["claim"]))
+            idx, claim.get("verdict_label", claim["verdict"]),
+            claim["claim"]))
         lines.append("  %s" % (claim.get("reason") or ""))
     trace["final_block"] = "\n".join(lines + [
-        "Safety advice: " + SAFETY_ADVICE])
+        "%s: %s" % (_SAFETY_LABEL.get(lang, "Safety advice"),
+                    safety_advice_for(lang))])
     trace["final_answer"] = trace["final_block"]
     return trace
 
@@ -489,9 +556,12 @@ def format_call_trace(trace, *, color=False):
     lines += ["", "Stage 4 — Per-claim verdicts",
               "----------------------------"]
     if not claims:
-        lines.append(CANNOT_BE_CONFIRMED)
+        lines.append(verdict_label(
+            CANNOT_BE_CONFIRMED, trace.get("lang", "en")))
     for idx, claim in enumerate(claims, 1):
-        lines.append("Claim %d: %s" % (idx, claim.get("verdict", "")))
+        lines.append("Claim %d: %s" % (
+            idx, claim.get("verdict_label",
+                           claim.get("verdict", ""))))
         lines.append("  %s" % (claim.get("reason") or ""))
     lines += ["", "Final block", "-----------",
               str(trace.get("final_block") or "")]

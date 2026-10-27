@@ -1376,14 +1376,18 @@ class TestCaseDCallCheck(unittest.TestCase):
         for transcript in transcripts:
             trace = cc.check_call(transcript, lang="hinglish")
             self.assertTrue(
-                trace["final_block"].endswith(cc.SAFETY_ADVICE),
-                transcript)
+                trace["final_block"].endswith(
+                    cc.safety_advice_for("hinglish")), transcript)
             self.assertIn("Safety advice:", trace["final_block"])
-            # Never states whether a policy exists.
-            self.assertIn("We cannot see your policy",
+            self.assertIn("Hum aapki policy nahi dekh sakte",
                           trace["final_block"])
             text = cc.format_call_trace(trace)
-            self.assertTrue(text.rstrip().endswith(cc.SAFETY_ADVICE))
+            self.assertTrue(text.rstrip().endswith(
+                cc.safety_advice_for("hinglish")))
+            # English default keeps the original safety advice.
+            en_trace = cc.check_call(transcript, lang="en")
+            self.assertTrue(
+                en_trace["final_block"].endswith(cc.SAFETY_ADVICE))
         # Combined Hinglish call: all three verdict kinds appear.
         trace = cc.check_call(self._HINGLISH, lang="hinglish")
         verdicts = [c["verdict"] for c in trace["claims"]]
@@ -1396,9 +1400,73 @@ class TestCaseDCallCheck(unittest.TestCase):
                       stream=stream), 0)
         out = stream.getvalue()
         self.assertIn("Caller claims", out)
-        self.assertIn("CONTRADICTS RULES", out)
-        self.assertIn("CANNOT BE CONFIRMED (ask insurer)", out)
-        self.assertTrue(out.rstrip().endswith(cc.SAFETY_ADVICE))
+        self.assertIn(cc.verdict_label(
+            cc.CONTRADICTS_RULES, "hinglish"), out)
+        self.assertIn(cc.verdict_label(
+            cc.CANNOT_BE_CONFIRMED, "hinglish"), out)
+        self.assertTrue(out.rstrip().endswith(
+            cc.safety_advice_for("hinglish")))
+
+    def test_fix22_lang_applies_to_labels_reasons_safety(self):
+        cc = self._callcheck()
+        for lang, label_part, safety_part in (
+                ("hinglish", "Rules ke khilaf", "Hum aapki policy"),
+                ("hi", "नियमों के विपरीत", "हम आपकी पॉलिसी")):
+            trace = cc.check_call(self._FULL_TRANSCRIPT, lang=lang)
+            self.assertIn(label_part, trace["final_block"])
+            self.assertIn(safety_part, trace["final_block"])
+            for claim in trace["claims"]:
+                self.assertEqual(
+                    claim["verdict_label"],
+                    cc.verdict_label(claim["verdict"], lang))
+                # Quotes and citations stay English.
+                self.assertTrue(claim["quote"])
+                if claim["citation"]:
+                    self.assertIn(claim["citation"], claim["reason"])
+            text = cc.format_call_trace(trace)
+            self.assertIn(label_part, text)
+        hi_trace = cc.check_call(self._FULL_TRANSCRIPT, lang="hi")
+        # Hindi reasons use Devanagari (English terms transliterated).
+        self.assertIn("रिवाइवल", hi_trace["claims"][1]["reason"])
+        hinglish_trace = cc.check_call(
+            self._FULL_TRANSCRIPT, lang="hinglish")
+        self.assertNotIn("नियमों के विपरीत",
+                         hinglish_trace["final_block"])
+        self.assertIn("Revival period pehle unpaid premium se "
+                      "5 years (non-linked) or 3 years (linked)",
+                      hinglish_trace["claims"][1]["reason"])
+
+    def test_fix22_demo_options_any_order(self):
+        demo = TestDemo()._demo()
+        cc = self._callcheck()
+        for argv in (
+                ["--lang", "hinglish", "--call", self._HINGLISH],
+                ["--call", self._HINGLISH, "--lang", "hinglish"],
+                ["--call=%s" % self._HINGLISH, "--lang=hinglish"],
+                ["--lang=hinglish", "--call=%s" % self._HINGLISH]):
+            stream = io.StringIO()
+            self.assertEqual(demo.main(argv, stream=stream), 0, argv)
+            self.assertIn("Rules ke khilaf", stream.getvalue())
+        # Question mode: options after the question too.
+        trace = TestDemo()._verified_trace()
+        try:
+            import verify.pipeline as pipeline_mod
+        except ImportError:
+            import pipeline as pipeline_mod
+        captured = {}
+
+        def fake_answer(question, lang=None):
+            captured["question"] = question
+            captured["lang"] = lang
+            return trace
+
+        with mock.patch.object(pipeline_mod, "answer", fake_answer):
+            self.assertEqual(demo.main(
+                ["Waiting period kitna hai?", "--lang", "hinglish"],
+                stream=io.StringIO()), 0)
+            self.assertEqual(captured["lang"], "hinglish")
+            self.assertEqual(demo.main(
+                ["--lang", "fr", "Bonjour?"], stream=io.StringIO()), 2)
 
 
 if __name__ == "__main__":
