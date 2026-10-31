@@ -37,8 +37,16 @@ $4.25 / 1M (overridable with ``EVAL_VERIFIER_USD_PER_1M_PROMPT`` /
 ``EVAL_VERIFIER_USD_PER_1M_COMPLETION``). Cached-prompt discounts
 are ignored, so the figure is an upper bound.
 
+Sale-date cases (Fix 36): ``cases_dates.jsonl`` (an ``answer`` or
+``adversarial_claim`` case may carry ``sale_date``) is run after
+``cases.jsonl`` and reported in its own section; the main summary
+covers ``cases.jsonl`` only. ``cases.jsonl`` predates Fix 36 and is
+not edited, so its no-sale-date superseded cases now meet
+``DEPENDS_ON_SALE_DATE`` and are reported as failures.
+
 Run: ``python -m verify.eval.run`` (reads ``.env`` like the demo).
-Exit code is 1 when the safety metric is non-zero, else 0.
+Exit code is 1 when the safety metric is non-zero (either set),
+else 0.
 """
 import argparse
 import json
@@ -96,10 +104,12 @@ def _run_answer(case, verifier):
             return _draft
 
         trace = answer(case["question"], lang=case.get("lang"),
-                       proposer=proposer, verifier=verifier)
+                       proposer=proposer, verifier=verifier,
+                       sale_date=case.get("sale_date"))
     else:
         trace = answer(case["question"], lang=case.get("lang"),
-                       verifier=verifier)
+                       verifier=verifier,
+                       sale_date=case.get("sale_date"))
     actual = trace.get("decision")
     return {
         "actual": actual,
@@ -150,26 +160,13 @@ def _run_call(case, proposer, verifier):
     }
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python -m verify.eval.run")
-    parser.add_argument("--cases", default=str(_HERE / "cases.jsonl"))
-    parser.add_argument("--out", default=str(_HERE / "REPORT.md"))
-    args = parser.parse_args(argv)
+def _load_cases(path):
+    return [json.loads(line) for line in
+            Path(path).read_text(encoding="utf-8").splitlines()
+            if line.strip()]
 
-    load_env()
-    cases = [json.loads(line) for line in
-             Path(args.cases).read_text(encoding="utf-8").splitlines()
-             if line.strip()]
 
-    verifier = Verifier(make_model_backend())
-    call_proposer = make_call_proposer()
-    proposer_model = os.environ.get("PROPOSER_MODEL") or "muse-spark-1.3"
-    rate_prompt = float(os.environ.get(
-        "EVAL_VERIFIER_USD_PER_1M_PROMPT", "1.25"))
-    rate_completion = float(os.environ.get(
-        "EVAL_VERIFIER_USD_PER_1M_COMPLETION", "4.25"))
-
-    started = datetime.now(timezone.utc)
+def _run_cases(cases, call_proposer, verifier):
     results = []
     for case in cases:
         t0 = time.monotonic()
@@ -195,6 +192,98 @@ def main(argv=None):
             result["actual"],
             "PASS" if result["passed"] else "FAIL",
             result["latency_s"]))
+    return results
+
+
+def _failure_lines(lines, failures):
+    if not failures:
+        lines.append("None.")
+    for r in failures:
+        case = r["case"]
+        expected = case.get("expected_decision") or case.get(
+            "expected_claims")
+        lines.append("- **%s** (%s, %s): expected `%s`, got `%s`. %s"
+                     % (case["id"], case["category"],
+                        case.get("lang", ""), expected, r["actual"],
+                        r["detail"] or ""))
+        if r.get("refusal_reason"):
+            lines.append("  - Refusal reason: %s" % r["refusal_reason"])
+        for d in r.get("diagnosis") or []:
+            ev = d.get("evidence") or {}
+            lines.append("  - Claim: %s" % d.get("claim"))
+            lines.append("    - Source: %s · evidence exists=%s found=%s"
+                         % (d.get("source"), ev.get("exists"),
+                            ev.get("found")))
+            lines.append("    - Quote: %s" % d.get("quote"))
+            lines.append("    - Verifier: %s — %s"
+                         % (d.get("verdict"), d.get("reason")))
+        if r["case"]["kind"] != "call" and not r.get("diagnosis"):
+            lines.append("  - No claims were drafted.")
+
+
+def _date_section(lines, results):
+    """Fix 36: sale-date cases (``cases_dates.jsonl``), own section."""
+    lines.append("## Sale-date cases (`cases_dates.jsonl`)")
+    lines.append("")
+    if not results:
+        lines.append("No sale-date cases were run.")
+        lines.append("")
+        return
+    passed = sum(1 for r in results if r["passed"])
+    wrong = sum(1 for r in results if r["wrong_verified"])
+    lines.append("- Accuracy: **%d/%d = %.1f%%**" % (
+        passed, len(results), 100.0 * passed / len(results)))
+    lines.append("- **Wrong answers shown as VERIFIED: %d of %d** "
+                 "(expected decision not VERIFIED). Must be 0."
+                 % (wrong, sum(1 for r in results
+                               if r["case"].get("expected_decision")
+                               != VERIFIED)))
+    lines.append("- Verifier tokens: %d total" % sum(
+        r["tokens"]["total"] for r in results))
+    lines.append("")
+    lines.append("| ID | Category | Lang | Sale date | Expected | "
+                 "Actual | Result | Latency (s) |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for r in results:
+        case = r["case"]
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %.2f |" % (
+            case["id"], case["category"], case.get("lang", ""),
+            case.get("sale_date") or "(none / from text)",
+            case.get("expected_decision"), r["actual"],
+            "PASS" if r["passed"] else "**FAIL**", r["latency_s"]))
+    lines.append("")
+    failures = [r for r in results if not r["passed"]]
+    lines.append("### Sale-date failures (%d)" % len(failures))
+    lines.append("")
+    _failure_lines(lines, failures)
+    lines.append("")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="python -m verify.eval.run")
+    parser.add_argument("--cases", default=str(_HERE / "cases.jsonl"))
+    parser.add_argument("--date-cases",
+                        default=str(_HERE / "cases_dates.jsonl"))
+    parser.add_argument("--out", default=str(_HERE / "REPORT.md"))
+    args = parser.parse_args(argv)
+
+    load_env()
+    cases = _load_cases(args.cases)
+    date_cases = (_load_cases(args.date_cases)
+                  if args.date_cases and Path(args.date_cases).exists()
+                  else [])
+
+    verifier = Verifier(make_model_backend())
+    call_proposer = make_call_proposer()
+    proposer_model = os.environ.get("PROPOSER_MODEL") or "muse-spark-1.3"
+    rate_prompt = float(os.environ.get(
+        "EVAL_VERIFIER_USD_PER_1M_PROMPT", "1.25"))
+    rate_completion = float(os.environ.get(
+        "EVAL_VERIFIER_USD_PER_1M_COMPLETION", "4.25"))
+
+    started = datetime.now(timezone.utc)
+    results = _run_cases(cases, call_proposer, verifier)
+    date_results = _run_cases(date_cases, call_proposer, verifier)
 
     total = len(results)
     passed = sum(1 for r in results if r["passed"])
@@ -290,30 +379,18 @@ def main(argv=None):
     failures = [r for r in results if not r["passed"]]
     lines.append("## Failures (%d)" % len(failures))
     lines.append("")
-    if not failures:
-        lines.append("None.")
-    for r in failures:
-        case = r["case"]
-        expected = case.get("expected_decision") or case.get(
-            "expected_claims")
-        lines.append("- **%s** (%s, %s): expected `%s`, got `%s`. %s"
-                     % (case["id"], case["category"],
-                        case.get("lang", ""), expected, r["actual"],
-                        r["detail"] or ""))
-        if r.get("refusal_reason"):
-            lines.append("  - Refusal reason: %s" % r["refusal_reason"])
-        for d in r.get("diagnosis") or []:
-            ev = d.get("evidence") or {}
-            lines.append("  - Claim: %s" % d.get("claim"))
-            lines.append("    - Source: %s · evidence exists=%s found=%s"
-                         % (d.get("source"), ev.get("exists"),
-                            ev.get("found")))
-            lines.append("    - Quote: %s" % d.get("quote"))
-            lines.append("    - Verifier: %s — %s"
-                         % (d.get("verdict"), d.get("reason")))
-        if r["case"]["kind"] != "call" and not r.get("diagnosis"):
-            lines.append("  - No claims were drafted.")
+    _failure_lines(lines, failures)
     lines.append("")
+    depends = [r["case"]["id"] for r in failures
+               if r["actual"] == "DEPENDS_ON_SALE_DATE"]
+    if depends:
+        lines.append("Of these, %s returned `DEPENDS_ON_SALE_DATE` "
+                     "(Fix 36): `cases.jsonl` predates sale-date "
+                     "precedence, has no sale date for them and is "
+                     "not edited. They are counted as failures."
+                     % ", ".join(depends))
+        lines.append("")
+    _date_section(lines, date_results)
     langs = {}
     for r in results:
         cat = r["case"]["category"]
@@ -365,7 +442,12 @@ def main(argv=None):
           "median latency %.2fs. Wrote %s"
           % (passed, total, wrong_verified, cost_usd,
              statistics.median(latencies), args.out))
-    return 1 if wrong_verified else 0
+    date_wrong = sum(1 for r in date_results if r["wrong_verified"])
+    if date_results:
+        print("Sale-date cases: %d/%d; wrong-as-VERIFIED %d"
+              % (sum(1 for r in date_results if r["passed"]),
+                 len(date_results), date_wrong))
+    return 1 if (wrong_verified or date_wrong) else 0
 
 
 if __name__ == "__main__":

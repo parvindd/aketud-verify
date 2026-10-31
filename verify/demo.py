@@ -3,6 +3,7 @@
 Usage::
 
     python -m verify.demo "<question>"
+    python -m verify.demo --sale-date 2021-06-15 "<question>"
 
 Prints a clean, readable trace::
 
@@ -55,6 +56,8 @@ _DECISION_COLOURS = {
     "REFUSED": _RED,
     "CORRECTED": _YELLOW,
     "SUPERSEDED": _MAGENTA,
+    "APPLIES_TO_OLDER_CONTRACT": _MAGENTA,
+    "DEPENDS_ON_SALE_DATE": _YELLOW,
 }
 
 
@@ -305,6 +308,19 @@ def format_trace(trace, *, color=False, raw=False):
     stage += 1
     _stage(lines, stage, "Final decision", color)
     lines.extend(_large_decision(str(trace.get("decision", "")), color))
+    sale = trace.get("sale_date")
+    if sale:
+        lines.append("Sale date: %s to %s (%s: %s)" % (
+            sale["earliest"], sale["latest"], sale["source"],
+            sale["text"]))
+    if trace.get("sale_date_error"):
+        lines.append("Sale date not used: %s" % trace["sale_date_error"])
+    for saving in trace.get("savings") or []:
+        ev = saving.get("evidence") or {}
+        lines.append("Savings clause: %s — evidence %s" % (
+            saving.get("citation"),
+            "FOUND" if ev.get("exists") and ev.get("found")
+            else "NOT FOUND"))
     if trace.get("refusal_reason"):
         lines.append("Refusal reason: %s" % trace["refusal_reason"])
     if trace.get("final_answer"):
@@ -372,6 +388,7 @@ def _build_parser():
     parser = _Parser(prog="python -m verify.demo", add_help=False)
     parser.add_argument("--raw", action="store_true")
     parser.add_argument("--lang", choices=_LANGS, default=None)
+    parser.add_argument("--sale-date", dest="sale_date", default=None)
     parser.add_argument("--call", dest="call", default=None)
     parser.add_argument("--call-audio", dest="call_audio", default=None)
     parser.add_argument("question", nargs="*")
@@ -386,8 +403,8 @@ def main(argv=None, stream=None):
         parsed = _build_parser().parse_args(args)
     except SystemExit:
         print('Usage: python -m verify.demo [--raw] '
-              '[--lang en|hi|hinglish] "<question>" | '
-              '--call "<transcript>" [--lang en|hi|hinglish] | '
+              '[--lang en|hi|hinglish] [--sale-date YYYY-MM-DD] '
+              '"<question>" | --call "<transcript>" [--lang en|hi|hinglish] | '
               '--call-audio <call.wav> [--lang en|hi|hinglish]',
               file=sys.stderr)
         return 2
@@ -438,9 +455,20 @@ def main(argv=None, stream=None):
         return 0
     if not parsed.question or not " ".join(parsed.question).strip():
         print('Usage: python -m verify.demo [--raw] '
-              '[--lang en|hi|hinglish] "<question>"',
+              '[--lang en|hi|hinglish] [--sale-date YYYY-MM-DD] '
+              '"<question>"',
               file=sys.stderr)
         return 2
+    if parsed.sale_date is not None:
+        try:
+            from verify.saledate import parse_iso
+        except ImportError:
+            from saledate import parse_iso
+        try:
+            parse_iso(parsed.sale_date)
+        except ValueError as exc:
+            print("Invalid --sale-date: %s" % exc, file=sys.stderr)
+            return 2
     question = " ".join(parsed.question).strip()
     lang = resolve_lang(parsed.lang, question)
     load_env()
@@ -448,7 +476,9 @@ def main(argv=None, stream=None):
         from verify.pipeline import answer
     except ImportError:
         from pipeline import answer
-    trace = answer(question, lang=lang)
+    extra = ({"sale_date": parsed.sale_date}
+             if parsed.sale_date is not None else {})
+    trace = answer(question, lang=lang, **extra)
     print(format_trace(trace, color=supports_color(stream),
                        raw=parsed.raw), file=stream)
     return 0

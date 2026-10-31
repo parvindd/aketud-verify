@@ -11,6 +11,14 @@ A small registry of governing rules. Each entry is::
 the date it was signed. These are distinct dates and must not
 be conflated.
 
+Fix 36 — sale-date aware precedence: every rule carries
+``applies_from`` (the date from which it governs newly sold
+contracts) and, where the issuing regulation has one, a
+``savings_quote`` / ``savings_source`` / ``savings_citation``: the
+clause saying contracts entered into earlier are not invalidated
+(IRDAI (Insurance Products) Regulations 2024, reg 9(3)). The
+savings quote is evidence-checked against its PDF like any quote.
+
 When a claim's source is superseded on a topic, the governing
 passage takes precedence over the claim's own source: the pipeline
 re-verifies the claim against the governing quote (after an
@@ -64,6 +72,28 @@ _RULE4_QUOTE = (
     "such phone calls are requested to lodge a police complaint."
 )
 
+# Fix 36: savings clause, IRDAI (Insurance Products) Regulations,
+# 2024, regulation 9 "Repeal and Savings", sub-regulation (3) — read
+# from the PDF 31 Oct 2026. The regulations are in force from the
+# later of Gazette publication (22 Mar 2024) and 1 April 2024
+# (reg 1(2)), i.e. 2024-04-01.
+_SAVINGS_QUOTE = (
+    "Unless otherwise mentioned herein, nothing in these regulations "
+    "shall be deemed to invalidate the insurance contracts entered "
+    "into prior to these regulations coming into force."
+)
+_SAVINGS_CITATION = (
+    "IRDAI (Insurance Products) Regulations, 2024, Regulation 9(3)")
+_PRODUCTS_SAVINGS = {
+    "applies_from": "2024-04-01",
+    "savings_quote": _SAVINGS_QUOTE,
+    "savings_source": "irdai-insurance-products-regulations-2024.pdf",
+    "savings_citation": _SAVINGS_CITATION,
+    "savings_ref": "Reg 9(3)",
+}
+_NO_SAVINGS = {"savings_quote": None, "savings_source": None,
+               "savings_citation": None, "savings_ref": None}
+
 REGISTRY = [
     {
         "topic": "PED waiting period",
@@ -77,6 +107,8 @@ REGISTRY = [
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
         "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
+        "short_ref": "Reg 7",
+        **_PRODUCTS_SAVINGS,
     },
     {
         "rule": 1,
@@ -89,6 +121,7 @@ REGISTRY = [
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
         "supersedes": [],
+        **_PRODUCTS_SAVINGS,
         "scope": "life policies",
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
@@ -122,6 +155,7 @@ REGISTRY = [
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
         "supersedes": [],
+        **_PRODUCTS_SAVINGS,
         "scope": "linked products only",
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
@@ -143,6 +177,7 @@ REGISTRY = [
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
         "supersedes": [],
+        **_PRODUCTS_SAVINGS,
         "scope": "non-linked products only",
         "citation": (
             "IRDAI (Insurance Products) Regulations, 2024, "
@@ -160,6 +195,8 @@ REGISTRY = [
         "effective_date": "2024-06-12",
         "published": "2024-06-12",
         "supersedes": [],
+        "applies_from": "2024-06-12",
+        **_NO_SAVINGS,
         "scope": "linked products only",
         "citation": (
             "Master Circular on Life Insurance Products, "
@@ -186,6 +223,8 @@ REGISTRY = [
         "effective_date": "2019-10-16",
         "published": "2019-10-16",
         "supersedes": [],
+        "applies_from": "2019-10-16",
+        **_NO_SAVINGS,
         "scope": "public notice on spurious calls (2019)",
         "citation": (
             "Master Circular on Insurance Advertisements, "
@@ -363,6 +402,22 @@ _TITLES = {
         "16 Oct 2019 (IRDAI/LIFE/CIR/MISC/189/10/2019)"
     ),
 }
+
+
+# Short names for a cited (superseded) source in final answers.
+_SHORT_NAMES = {
+    "arogya-sanjeevani-hdfc-ergo.pdf": {
+        "en": "the specimen", "hi": "स्पेसिमेन",
+        "hinglish": "specimen"},
+}
+
+
+def short_source_name(source_file, lang="en"):
+    """Short name of a cited source (e.g. ``the specimen``)."""
+    names = _SHORT_NAMES.get(source_file)
+    if names:
+        return names.get(lang, names["en"])
+    return source_title(source_file)
 
 
 def governing_title(source_file):

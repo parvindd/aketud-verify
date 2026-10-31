@@ -197,7 +197,8 @@ class TestPostCall(unittest.TestCase):
                 "/check",
                 "multipart/form-data; boundary=%s" % boundary, body)
         self.assertEqual(status, 200)
-        run.assert_called_once_with("हिंदी सवाल", lang="auto")
+        run.assert_called_once_with("हिंदी सवाल", lang="auto",
+                                    sale_date="")
 
 
 class TestRunAudio(unittest.TestCase):
@@ -291,6 +292,61 @@ class TestFix35TidyResult(unittest.TestCase):
         s5 = _stage(_post_call(trace), 5)
         self.assertEqual(s5.count("CANNOT BE CONFIRMED"), 1)
         self.assertEqual(s5.count("Ask your insurer."), 1)
+
+
+class TestFix36SaleDate(unittest.TestCase):
+    def test_index_has_sale_date_field(self):
+        _, _, body = web.handle_get("/")
+        text = body.decode("utf-8")
+        self.assertIn('type="date"', text)
+        self.assertIn('name="sale_date"', text)
+
+    def test_sale_date_passed_and_shown(self):
+        trace = _answer_trace("APPLIES_TO_OLDER_CONTRACT")
+        trace["sale_date"] = {"earliest": "2021-06-15",
+                              "latest": "2021-06-15",
+                              "source": "explicit", "precision": "day",
+                              "text": "2021-06-15"}
+        trace["savings"] = [{
+            "citation": "IRDAI (Insurance Products) Regulations, 2024, "
+                        "Regulation 9(3)",
+            "evidence": {"exists": True, "found": True}}]
+        with mock.patch.object(web, "run_answer",
+                               return_value=trace) as run:
+            status, _, body = web.handle_post(
+                "/check", "application/x-www-form-urlencoded",
+                urlencode({"text": "PED?", "mode": "answer",
+                           "sale_date": "2021-06-15"}).encode())
+        self.assertEqual(status, 200)
+        run.assert_called_once_with("PED?", lang="auto",
+                                    sale_date="2021-06-15")
+        text = body.decode("utf-8")
+        s5 = text.split("Stage 5")[1]
+        self.assertIn("APPLIES_TO_OLDER_CONTRACT", s5)
+        self.assertIn("#9334e6", s5)
+        self.assertIn("Sale date: 2021-06-15", s5)
+        self.assertIn("Regulation 9(3) &mdash; evidence FOUND", s5)
+        self.assertIn('value="2021-06-15"', text)  # field keeps value
+
+    def test_depends_on_sale_date_colour(self):
+        with mock.patch.object(
+                web, "run_answer",
+                return_value=_answer_trace("DEPENDS_ON_SALE_DATE")):
+            _, _, body = web.handle_post(
+                "/check", "application/x-www-form-urlencoded",
+                urlencode({"text": "PED?", "mode": "answer"}).encode())
+        s5 = body.decode("utf-8").split("Stage 5")[1]
+        self.assertIn("DEPENDS_ON_SALE_DATE", s5)
+        self.assertIn("#b06000", s5)
+
+    def test_run_answer_forwards_sale_date(self):
+        with mock.patch.object(web, "answer", return_value={}) as ans:
+            web.run_answer("Q?", lang="en", sale_date="2021-01-01")
+            web.run_answer("Q?", lang="auto", sale_date="")
+        self.assertEqual(ans.call_args_list[0].kwargs,
+                         {"lang": "en", "sale_date": "2021-01-01"})
+        self.assertEqual(ans.call_args_list[1].kwargs,
+                         {"lang": None, "sale_date": None})
 
 
 if __name__ == "__main__":

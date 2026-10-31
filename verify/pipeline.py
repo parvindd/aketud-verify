@@ -31,6 +31,20 @@
      verifier's reason and the source name, never the claim's own
      quote.
 
+   Fix 36 — sale date: a would-be ``SUPERSEDED`` decision depends on
+   when the policy was sold (``sale_date``, or deterministic text
+   such as "bought in 2021"; see :mod:`verify.saledate`):
+
+   - sold on/after the rule's ``applies_from`` -> ``SUPERSEDED``;
+   - sold before -> ``APPLIES_TO_OLDER_CONTRACT``: the cited
+     document's figure may still govern that contract (reg 9(3));
+     both figures and both sources are stated;
+   - no sale date (or one that straddles ``applies_from``) ->
+     ``DEPENDS_ON_SALE_DATE``: both rules are stated.
+
+   Neither new decision is ever ``VERIFIED``, and both require the
+   savings clause to pass its own evidence check (else ``REFUSED``).
+
 Fail closed: anything not proven ``SUPPORTED`` is never shown as
 verified. A ``REFUSED`` result carries no verified answer text; its
 ``final_answer`` is the refusal message described above.
@@ -57,7 +71,9 @@ try:
                                   governing_for, governing_title,
                                   source_title,
                                   topic_detection_uncertain)
+    from verify.authority import short_source_name
     from verify.evidence import check_evidence, extract_text
+    from verify import saledate
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                                  SUPPORTED, Verifier, make_model_backend,
                                  verifier_label)
@@ -65,7 +81,9 @@ except ImportError:  # run as top-level modules (cd verify; unittest)
     from authority import (REGISTRY, effective_display, governing_for,
                            governing_title, source_title,
                            topic_detection_uncertain)
+    from authority import short_source_name
     from evidence import check_evidence, extract_text
+    import saledate
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
                           SUPPORTED, Verifier, make_model_backend,
                           verifier_label)
@@ -74,6 +92,8 @@ VERIFIED = "VERIFIED"
 REFUSED = "REFUSED"
 CORRECTED = "CORRECTED"
 SUPERSEDED = "SUPERSEDED"
+APPLIES_TO_OLDER_CONTRACT = "APPLIES_TO_OLDER_CONTRACT"
+DEPENDS_ON_SALE_DATE = "DEPENDS_ON_SALE_DATE"
 
 REFUSAL_NO_API_KEY = "no API key"
 REFUSAL_PROPOSER_ERROR = "proposer error"
@@ -253,6 +273,90 @@ def _build_superseded(records, lang="en"):
                 % (rec["governing_value"], rec["governing_title"],
                    rec["cited_title"], rec["cited_value"]))
         parts.append(sentence + "\n" + rec["governing_quote"])
+    return "\n".join(parts)
+
+
+def _months(value, lang):
+    return _hindi_value(value) if lang == "hi" else value
+
+
+def _quote_lines(pairs):
+    return "\n".join("%s: %s" % (title, quote) for title, quote in pairs)
+
+
+def _build_depends(records, lang="en"):
+    """``DEPENDS_ON_SALE_DATE`` answer (Fix 36): both rules stated."""
+    parts = []
+    for rec in records:
+        rule = rec["rule"]
+        since = saledate.date_display(rule["applies_from"], lang)
+        new = _months(rec["governing_value"], lang)
+        old = _months(rec["cited_value"], lang)
+        ref = rule.get("short_ref") or rec["governing_title"]
+        sref = rule["savings_ref"]
+        name = rec["cited_short"]
+        if lang == "hi":
+            sentence = (
+                "%s से: अधिकतम %s (%s)। इससे पहले खरीदी गई "
+                "पॉलिसियों पर उनके कॉन्ट्रैक्ट की शर्तें लागू रहती "
+                "हैं (%s); %s में %s लिखा है।"
+                % (since, new, ref, sref, name, old))
+        elif lang == "hinglish":
+            sentence = (
+                "%s se: maximum %s (%s). Isse pehle li gayi policies "
+                "par unke contract ki terms lagu rehti hain (%s); %s "
+                "mein %s likha hai." % (since, new, ref, sref, name, old))
+        else:
+            sentence = (
+                "From %s: max %s (%s). Policies bought earlier keep "
+                "their contract terms (%s); %s says %s."
+                % (since, new, ref, sref, name, old))
+        parts.append(sentence + "\n" + _quote_lines([
+            (rec["governing_title"], rec["governing_quote"]),
+            (rule["savings_citation"], rule["savings_quote"])]))
+    return "\n".join(parts)
+
+
+def _build_older(records, sale, lang="en"):
+    """``APPLIES_TO_OLDER_CONTRACT`` answer (Fix 36)."""
+    parts = []
+    when = saledate.display(sale, lang)
+    for rec in records:
+        rule = rec["rule"]
+        since = saledate.date_display(rule["applies_from"], lang)
+        new = _months(rec["governing_value"], lang)
+        old = _months(rec["cited_value"], lang)
+        ref = rule.get("short_ref") or rec["governing_title"]
+        sref = rule["savings_ref"]
+        name = rec["cited_short"]
+        if lang == "hi":
+            sentence = (
+                "आपकी पॉलिसी %s से पहले खरीदी गई थी (सेल डेट: %s)। "
+                "%s के अनुसार 2024 के नियम पहले के कॉन्ट्रैक्ट को "
+                "अमान्य नहीं करते, इसलिए आपके कॉन्ट्रैक्ट पर %s के "
+                "%s अभी भी लागू हो सकते हैं। %s से अधिकतम %s है "
+                "(%s)। अपना पॉलिसी डॉक्यूमेंट देखें।"
+                % (since, when, sref, name, old, since, new, ref))
+        elif lang == "hinglish":
+            sentence = (
+                "Aapki policy %s se pehle li gayi thi (sale date: %s). "
+                "%s ke anusar 2024 ke regulations pehle ke contracts "
+                "ko invalid nahi karte, isliye aapke contract par %s "
+                "ke %s abhi bhi lagu ho sakte hain. %s se maximum %s "
+                "hai (%s). Apna policy document check karein."
+                % (since, when, sref, name, old, since, new, ref))
+        else:
+            sentence = (
+                "Your policy was bought before %s (sale date: %s). "
+                "Under %s the 2024 regulations do not invalidate "
+                "contracts entered into earlier, so %s's %s may still "
+                "govern your contract. From %s the maximum is %s (%s). "
+                "Check your policy document."
+                % (since, when, sref, name, old, since, new, ref))
+        parts.append(sentence + "\n" + _quote_lines([
+            (rec["cited_title"], rec["cited_quote"]),
+            (rec["governing_title"], rec["governing_quote"]),
+            (rule["savings_citation"], rule["savings_quote"])]))
     return "\n".join(parts)
 
 
@@ -518,8 +622,13 @@ def _normalise_draft(draft):
 
 
 def answer(question, lang=None, *, proposer=None, verifier=None,
-           raw_dir=None):
+           raw_dir=None, sale_date=None):
     """Answer ``question`` fail-closed; return the full trace.
+
+    ``sale_date`` (Fix 36) is an optional ``YYYY-MM-DD`` string or
+    ``datetime.date``; without it the question text is searched
+    deterministically ("bought in 2021"). It only changes a
+    would-be ``SUPERSEDED`` decision (see the module docstring).
 
     ``proposer`` is ``(question, lang) -> draft`` (dict or JSON str);
     ``verifier`` is a :class:`Verifier` or a backend callable. Both
@@ -541,6 +650,10 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
              "verifier": _default_verifier_label,
              "verifier_model": None, "verifier_fallback": None,
              "verifier_usage": None, "verifier_latency_s": None}
+    sale, sale_error = saledate.resolve(sale_date, question)
+    trace["sale_date"] = saledate.to_trace(sale)
+    trace["sale_date_error"] = sale_error
+    trace["savings"] = []
     if question is None or not str(question).strip():
         return _refuse(trace, REFUSAL_NO_CLAIMS)
     if proposer is None:
@@ -763,12 +876,16 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                     governing_superseded = True
                     has_superseded = True
                     superseded_records.append({
+                        "rule": rule,
                         "governing_value": entry["governing_value"],
                         "governing_title": governing_title(
                             rule["source_file"]),
                         "governing_quote": rule["quote"],
                         "cited_title": source_title(
                             item["source_file"]),
+                        "cited_short": short_source_name(
+                            item["source_file"], lang),
+                        "cited_quote": item["quote"],
                         "cited_value": entry["cited_value"],
                     })
                 else:
@@ -818,6 +935,42 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
             trace, refusal_reason or REFUSAL_VERIFIER_INSUFFICIENT,
             detail=refusal_detail)
     elif has_superseded:
+        # Fix 36: which rule governs depends on the sale date.
+        branches = [saledate.classify(sale, rec["rule"].get(
+            "applies_from")) for rec in superseded_records]
+        trace["sale_date_branch"] = branches
+        if saledate.UNKNOWN in branches or saledate.OLDER in branches:
+            for rec in superseded_records:
+                rule = rec["rule"]
+                ev = ({"exists": False, "found": False,
+                       "page_text_hash": None}
+                      if not rule.get("savings_quote")
+                      else check_evidence(rule["savings_source"],
+                                          rule["savings_quote"],
+                                          raw_dir=raw_dir))
+                trace["savings"].append({
+                    "source_file": rule.get("savings_source"),
+                    "citation": rule.get("savings_citation"),
+                    "quote": rule.get("savings_quote"),
+                    "evidence": ev})
+                if not (ev["exists"] and ev["found"]):
+                    # No verified savings clause: never pick a side.
+                    return _refuse(
+                        trace, REFUSAL_GOVERNING_INSUFFICIENT,
+                        detail="Savings clause evidence check failed "
+                               "(exists=%s, found=%s)."
+                               % (ev["exists"], ev["found"]))
+            if saledate.UNKNOWN in branches:
+                trace["decision"] = DEPENDS_ON_SALE_DATE
+                parts = [_build_depends(superseded_records, lang)]
+            else:
+                trace["decision"] = APPLIES_TO_OLDER_CONTRACT
+                parts = [_build_older(superseded_records, sale, lang)]
+            if corrected_records:
+                parts.append(_build_corrected(corrected_records, lang))
+            trace["correction"] = "\n".join(p for p in parts if p)
+            trace["final_answer"] = trace["correction"]
+            return trace
         trace["decision"] = SUPERSEDED
         parts = [_build_superseded(superseded_records, lang)]
         if corrected_records:

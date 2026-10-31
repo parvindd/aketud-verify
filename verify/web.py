@@ -51,6 +51,8 @@ _DECISION_COLOURS = {
     "CORRECTED": "#b06000",
     "CANNOT BE CONFIRMED (ask insurer)": "#b06000",
     "SUPERSEDED": "#9334e6",
+    "APPLIES_TO_OLDER_CONTRACT": "#9334e6",
+    "DEPENDS_ON_SALE_DATE": "#b06000",
 }
 
 
@@ -69,9 +71,10 @@ def _resolve_lang(lang):
 
 # --- Pipeline seams (mocked in tests; no logic duplicated) ------------
 
-def run_answer(question, lang=None):
+def run_answer(question, lang=None, sale_date=None):
     """Answer a question via the pipeline (live models from env)."""
-    return answer(question, lang=_resolve_lang(lang))
+    return answer(question, lang=_resolve_lang(lang),
+                  sale_date=sale_date or None)
 
 
 def run_call(transcript, lang=None):
@@ -208,10 +211,25 @@ def render_answer_cards(trace):
     decision = str(trace.get("decision") or "")
     body = ('<p class="decision" style="color:%s">%s</p>'
             % (_colour(decision), _esc(decision)))
+    # Fix 36: which sale date was used, and the savings clause check.
+    sale = trace.get("sale_date")
+    if sale:
+        body += "<p>Sale date: %s to %s (%s: %s)</p>" % (
+            _esc(sale.get("earliest")), _esc(sale.get("latest")),
+            _esc(sale.get("source")), _esc(sale.get("text")))
+    if trace.get("sale_date_error"):
+        body += "<p>Sale date not used: %s</p>" % _esc(
+            trace["sale_date_error"])
+    for saving in trace.get("savings") or []:
+        ev = saving.get("evidence") or {}
+        body += "<p>Savings clause: %s &mdash; evidence %s</p>" % (
+            _esc(saving.get("citation")),
+            "FOUND" if ev.get("exists") and ev.get("found")
+            else "NOT FOUND")
     if trace.get("refusal_reason"):
         body += "<p>Refusal reason: %s</p>" % _esc(trace["refusal_reason"])
     if trace.get("final_answer"):
-        body += "<p>%s</p>" % _esc(trace["final_answer"])
+        body += '<p class="final">%s</p>' % _esc(trace["final_answer"])
     cards.append(_card("Stage 5 — Final decision", body))
     return "\n".join(cards)
 
@@ -320,6 +338,7 @@ margin:1rem 0}
 .decision{font-size:2rem;font-weight:700;margin:.5rem 0}
 label{display:block;margin:.6rem 0 .2rem;font-weight:600}
 textarea{width:100%}pre{white-space:pre-wrap}
+.final{white-space:pre-wrap}
 .error{border-color:#b3261e;color:#b3261e}
 </style></head><body>
 <h1>Aketud Verify</h1>
@@ -330,6 +349,8 @@ the server.</p>
 <textarea id="text" name="text" rows="5">__TEXT__</textarea>
 <label for="lang">Language</label>
 <select id="lang" name="lang">__LANG_OPTIONS__</select>
+<label for="sale_date">Policy sale date (optional, questions only)</label>
+<input type="date" id="sale_date" name="sale_date" value="__SALE_DATE__">
 <label>Mode</label>
 <label style="font-weight:400"><input type="radio" name="mode"
 value="answer"__ANSWER_CHECKED__> Ask a question</label>
@@ -344,7 +365,7 @@ __RESULT__
 
 
 def render_page(trace=None, *, mode="answer", text="", lang="auto",
-                error=None):
+                error=None, sale_date=""):
     """Render the single page, optionally with result cards."""
     lang_options = "".join(
         '<option value="%s"%s>%s</option>' % (
@@ -363,6 +384,7 @@ def render_page(trace=None, *, mode="answer", text="", lang="auto",
             result = render_answer_cards(trace)
     page = _PAGE.replace("__TEXT__", _esc(text))
     page = page.replace("__LANG_OPTIONS__", lang_options)
+    page = page.replace("__SALE_DATE__", _esc(sale_date))
     page = page.replace("__ANSWER_CHECKED__",
                         " checked" if mode != "call" else "")
     page = page.replace("__CALL_CHECKED__",
@@ -451,6 +473,7 @@ def handle_post(path, content_type, body):
     mode = fields.get("mode") or "answer"
     if mode not in ("answer", "call"):
         mode = "answer"
+    sale_date = (fields.get("sale_date") or "").strip()
     audio = files.get("audio")
     has_audio = bool(audio and audio[0] and audio[2])
     try:
@@ -462,18 +485,21 @@ def handle_post(path, content_type, body):
             return 200, "text/html; charset=utf-8", page.encode("utf-8")
         if not text:
             page = render_page(mode=mode, text=text, lang=lang,
+                               sale_date=sale_date,
                                error="Please enter a question or call "
                                      "transcript, or upload a recording.")
             return 400, "text/html; charset=utf-8", page.encode("utf-8")
         if mode == "call":
             trace = run_call(text, lang=lang)
         else:
-            trace = run_answer(text, lang=lang)
+            trace = run_answer(text, lang=lang, sale_date=sale_date)
     except Exception as exc:  # fail visibly, never leak keys/tracebacks
         page = render_page(mode=mode, text=text, lang=lang,
+                           sale_date=sale_date,
                            error="Check failed: %s" % exc)
         return 502, "text/html; charset=utf-8", page.encode("utf-8")
-    page = render_page(trace, mode=mode, text=text, lang=lang)
+    page = render_page(trace, mode=mode, text=text, lang=lang,
+                       sale_date=sale_date)
     return 200, "text/html; charset=utf-8", page.encode("utf-8")
 
 

@@ -23,6 +23,8 @@ from unittest import mock
 try:
     from verify.evidence import check_evidence, extract_text
     from verify.pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED,
+                                 APPLIES_TO_OLDER_CONTRACT,
+                                 DEPENDS_ON_SALE_DATE,
                                  REFUSAL_EVIDENCE_NOT_FOUND,
                                  REFUSAL_GOVERNING_INSUFFICIENT,
                                  REFUSAL_NO_API_KEY, REFUSAL_NO_CLAIMS,
@@ -36,6 +38,7 @@ try:
 except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from evidence import check_evidence, extract_text
     from pipeline import (CORRECTED, REFUSED, SUPERSEDED, VERIFIED,
+                          APPLIES_TO_OLDER_CONTRACT, DEPENDS_ON_SALE_DATE,
                           REFUSAL_EVIDENCE_NOT_FOUND,
                           REFUSAL_GOVERNING_INSUFFICIENT, REFUSAL_NO_API_KEY,
                           REFUSAL_NO_CLAIMS, REFUSAL_PREFIX,
@@ -74,6 +77,46 @@ SUPERSEDING_REASON = (
     "caps the PED waiting period at a maximum of 36 months; the 2024 "
     "Products Regulations supersede the specimen figure."
 )
+
+
+# Offline guarantee: the demo's ``.env`` lookup finds nothing and the
+# model env vars are cleared for this module, so no test reaches a
+# live model even when a real key sits in ``.env``. Explicit
+# ``load_env(path)`` (its own tests) still works.
+_OFFLINE_PATCHES = []
+
+
+def setUpModule():
+    offline_env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(("META_", "VERIFIER_",
+                                        "PROPOSER_"))}
+    _OFFLINE_PATCHES.append(
+        mock.patch.dict(os.environ, offline_env, clear=True))
+    for name in ("verify.demo", "demo"):
+        try:
+            module = __import__(name, fromlist=["_env_candidates"])
+        except ImportError:
+            continue
+        _OFFLINE_PATCHES.append(
+            mock.patch.object(module, "_env_candidates", lambda: []))
+    for patcher in _OFFLINE_PATCHES:
+        patcher.start()
+
+
+def tearDownModule():
+    while _OFFLINE_PATCHES:
+        _OFFLINE_PATCHES.pop().stop()
+
+
+# Fix 36: SUPERSEDED needs a sale date on/after the rule's
+# applies_from (2024-04-01); without one the decision is
+# DEPENDS_ON_SALE_DATE. Case C tests of the SUPERSEDED path use this.
+CURRENT_SALE_DATE = "2024-06-01"
+
+
+def answer_sold_after_2024(*args, **kwargs):
+    kwargs.setdefault("sale_date", CURRENT_SALE_DATE)
+    return answer(*args, **kwargs)
 
 
 def fake_proposer(draft):
@@ -515,7 +558,7 @@ class TestFix27VerifierBackends(unittest.TestCase):
         fake.post = post
         with mock.patch.dict(os.environ, env), \
                 mock.patch.dict(sys.modules, {"requests": fake}):
-            trace = answer("What is the PED waiting period?",
+            trace = answer_sold_after_2024("What is the PED waiting period?",
                            proposer=fake_proposer(draft))
         self.assertEqual(trace["decision"], SUPERSEDED)
         self.assertEqual(trace["verifier"],
@@ -626,7 +669,7 @@ class TestFix28VerifierCheapParallel(unittest.TestCase):
         started = time_mod.monotonic()
         with mock.patch.dict(os.environ, env), \
                 mock.patch.dict(sys.modules, {"requests": fake}):
-            trace = answer("What is the PED waiting period?",
+            trace = answer_sold_after_2024("What is the PED waiting period?",
                            proposer=fake_proposer(draft))
         elapsed = time_mod.monotonic() - started
         self.assertEqual(trace["decision"], SUPERSEDED)
@@ -720,7 +763,7 @@ class TestPipelineScenarios(unittest.TestCase):
         draft = {"claims": [{
             "claim": "PED waiting period is 48 months",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
-        trace = answer(
+        trace = answer_sold_after_2024(
             "What is the PED waiting period?",
             proposer=fake_proposer(draft), verifier=backend)
         self.assertEqual(trace["decision"], SUPERSEDED)
@@ -769,7 +812,7 @@ class TestPipelineScenarios(unittest.TestCase):
             "claim": "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए वेटिंग पीरियड "
                      "48 महीने है",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
-        trace = answer(
+        trace = answer_sold_after_2024(
             "प्री-एग्ज़िस्टिंग डिज़ीज़ के लिए प्रतीक्षा अवधि क्या है?",
             proposer=fake_proposer(draft),
             verifier=self._superseded_backend())
@@ -789,7 +832,7 @@ class TestPipelineScenarios(unittest.TestCase):
             "claim": "Purani bimari ke liye waiting period "
                      "48 months hai",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
-        trace = answer(
+        trace = answer_sold_after_2024(
             "Purani bimari ke liye waiting period kitne months hai?",
             proposer=fake_proposer(draft),
             verifier=self._superseded_backend())
@@ -803,7 +846,7 @@ class TestPipelineScenarios(unittest.TestCase):
         draft = {"claims": [{
             "claim": "The period is 48 months",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
-        trace = answer(
+        trace = answer_sold_after_2024(
             "What is the period?",
             proposer=fake_proposer(draft),
             verifier=self._superseded_backend())
@@ -1151,7 +1194,7 @@ class TestAnswerLanguage(unittest.TestCase):
         self.assertNotIn(REFUSAL_PREFIX, trace["final_answer"])
 
     def test_fix15_c_hi_superseded(self):
-        trace = answer(
+        trace = answer_sold_after_2024(
             "प्रतीक्षा अवधि क्या है?", lang="hi",
             proposer=fake_proposer(self._c_draft()),
             verifier=self._c_backend())
@@ -1171,7 +1214,7 @@ class TestAnswerLanguage(unittest.TestCase):
         self.assertNotIn("Current rule:", msg)
 
     def test_fix15_c_hinglish_superseded(self):
-        trace = answer(
+        trace = answer_sold_after_2024(
             "Waiting period kitna hai?", lang="hinglish",
             proposer=fake_proposer(self._c_draft()),
             verifier=self._c_backend())
@@ -1311,7 +1354,7 @@ class TestDemo(unittest.TestCase):
         draft = {"claims": [{
             "claim": "PED waiting period is 48 months",
             "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
-        trace = answer("What is the PED waiting period?",
+        trace = answer_sold_after_2024("What is the PED waiting period?",
                        proposer=fake_proposer(draft), verifier=backend)
         text = demo.format_trace(trace, color=False)
         self.assertIn("Governing check", text)
@@ -2251,6 +2294,281 @@ class TestFix34RobustVerifierJson(unittest.TestCase):
         claim = trace["claims"][0]
         self.assertEqual(claim["verdict"], INSUFFICIENT_EVIDENCE)
         self.assertEqual(claim["verifier_raw_output"], '{"verdict": ')
+
+
+class TestFix36SaleDatePrecedence(unittest.TestCase):
+    """Fix 36: sale-date aware precedence (reg 9(3) savings clause)."""
+
+    SAVINGS = ("Unless otherwise mentioned herein, nothing in these "
+               "regulations shall be deemed to invalidate the insurance "
+               "contracts entered into prior to these regulations coming "
+               "into force.")
+
+    def _draft(self):
+        return {"claims": [{
+            "claim": "PED waiting period is 48 months",
+            "source_file": AROGYA, "quote": AROGYA_48_QUOTE}]}
+
+    def _backend(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return json.dumps({"verdict": CONTRADICTED,
+                                   "reason": "caps PED at 36 months"})
+            return json.dumps({"verdict": SUPPORTED,
+                               "reason": "Arogya says 48."})
+        return backend
+
+    def _ask(self, question="What is the PED waiting period?", lang="en",
+             **kwargs):
+        return answer(question, lang=lang,
+                      proposer=fake_proposer(self._draft()),
+                      verifier=self._backend(), **kwargs)
+
+    # --- registry -----------------------------------------------------
+
+    def test_registry_savings_quote_is_verbatim_and_found(self):
+        from verify.authority import REGISTRY
+        ped = REGISTRY[0]
+        self.assertEqual(ped["applies_from"], "2024-04-01")
+        self.assertEqual(ped["savings_quote"], self.SAVINGS)
+        ev = check_evidence(ped["savings_source"], ped["savings_quote"])
+        self.assertTrue(ev["exists"] and ev["found"])
+
+    # --- three branches -----------------------------------------------
+
+    def test_sold_on_or_after_applies_from_is_superseded(self):
+        for sale in ("2024-04-01", "2025-01-10"):
+            trace = self._ask(sale_date=sale)
+            self.assertEqual(trace["decision"], SUPERSEDED, sale)
+            self.assertEqual(trace["sale_date_branch"], ["current"])
+
+    def test_sold_before_applies_from_is_older_contract(self):
+        trace = self._ask(sale_date="2024-03-31")
+        self.assertEqual(trace["decision"], APPLIES_TO_OLDER_CONTRACT)
+        msg = trace["final_answer"]
+        for text in ("48 months", "36 months", "Reg 9(3)", "Reg 7",
+                     "31 March 2024", "Check your policy document",
+                     AROGYA_48_QUOTE, PED_QUOTE, self.SAVINGS,
+                     "Arogya Sanjeevani prospectus",
+                     "IRDAI (Insurance Products) Regulations, 2024"):
+            self.assertIn(text, msg)
+        self.assertTrue(trace["savings"][0]["evidence"]["found"])
+
+    def test_no_sale_date_depends_on_sale_date(self):
+        trace = self._ask()
+        self.assertEqual(trace["decision"], DEPENDS_ON_SALE_DATE)
+        self.assertIsNone(trace["sale_date"])
+        msg = trace["final_answer"]
+        self.assertTrue(msg.startswith(
+            "From 1 April 2024: max 36 months (Reg 7). Policies bought "
+            "earlier keep their contract terms (Reg 9(3)); the specimen "
+            "says 48 months."), msg)
+        self.assertIn(PED_QUOTE, msg)
+        self.assertIn(self.SAVINGS, msg)
+
+    def test_year_straddling_applies_from_depends(self):
+        trace = self._ask("I bought Arogya Sanjeevani in 2024. PED "
+                          "waiting period?")
+        self.assertEqual(trace["sale_date"]["earliest"], "2024-01-01")
+        self.assertEqual(trace["decision"], DEPENDS_ON_SALE_DATE)
+
+    def test_question_text_sale_date_used(self):
+        trace = self._ask("PED waiting period? I bought it in 2021.")
+        self.assertEqual(trace["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("(sale date: 2021)", trace["final_answer"])
+
+    def test_explicit_sale_date_wins_over_text(self):
+        trace = self._ask("PED waiting period? I bought it in 2021.",
+                          sale_date="2025-02-01")
+        self.assertEqual(trace["decision"], SUPERSEDED)
+
+    def test_invalid_explicit_date_fails_closed_to_depends(self):
+        trace = self._ask(sale_date="2021-13-40")
+        self.assertEqual(trace["decision"], DEPENDS_ON_SALE_DATE)
+        self.assertTrue(trace["sale_date_error"])
+
+    def test_languages(self):
+        hi = self._ask("प्रतीक्षा अवधि क्या है?", lang="hi")
+        self.assertEqual(hi["decision"], DEPENDS_ON_SALE_DATE)
+        self.assertIn("1 अप्रैल 2024 से: अधिकतम 36 महीने (Reg 7)",
+                      hi["final_answer"])
+        self.assertIn("स्पेसिमेन में 48 महीने", hi["final_answer"])
+        hi_old = self._ask("मैंने पॉलिसी 2022 में ली थी। प्रतीक्षा अवधि?",
+                           lang="hi")
+        self.assertEqual(hi_old["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("अपना पॉलिसी डॉक्यूमेंट देखें", hi_old["final_answer"])
+        hg = self._ask("Waiting period kitna hai?", lang="hinglish")
+        self.assertEqual(hg["decision"], DEPENDS_ON_SALE_DATE)
+        self.assertIn("1 April 2024 se: maximum 36 months (Reg 7)",
+                      hg["final_answer"])
+        hg_old = self._ask("Maine policy 2021 mein li thi, waiting "
+                           "period kitna hai?", lang="hinglish")
+        self.assertEqual(hg_old["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("Apna policy document check karein",
+                      hg_old["final_answer"])
+
+    # --- fail closed unchanged ----------------------------------------
+
+    def test_never_verified_and_refusals_unchanged(self):
+        for sale in (None, "2019-05-05", "2025-05-05"):
+            trace = self._ask(sale_date=sale)
+            self.assertNotEqual(trace["decision"], VERIFIED, sale)
+        fabricated = {"claims": [{
+            "claim": "PED waiting period is 12 months",
+            "source_file": AROGYA, "quote": "12 months waiting period"}]}
+        for sale in (None, "2019-05-05"):
+            trace = answer("PED waiting period?", lang="en",
+                           proposer=fake_proposer(fabricated),
+                           verifier=self._backend(), sale_date=sale)
+            self.assertEqual(trace["decision"], REFUSED)
+            self.assertEqual(trace["refusal_reason"],
+                             REFUSAL_EVIDENCE_NOT_FOUND)
+
+    def test_governing_insufficient_still_refuses_with_old_date(self):
+        def backend(claim, quote, source_text):
+            if quote == PED_QUOTE:
+                return "not json"
+            return json.dumps({"verdict": SUPPORTED, "reason": "48"})
+        trace = answer("PED waiting period?", lang="en",
+                       proposer=fake_proposer(self._draft()),
+                       verifier=backend, sale_date="2020-01-01")
+        self.assertEqual(trace["decision"], REFUSED)
+
+    def test_savings_evidence_failure_refuses(self):
+        try:
+            import verify.pipeline as pipeline_mod
+        except ImportError:
+            import pipeline as pipeline_mod
+        real = pipeline_mod.check_evidence
+
+        def fake(source_file, quote, **kwargs):
+            if quote == self.SAVINGS:
+                return {"exists": True, "found": False,
+                        "page_text_hash": None}
+            return real(source_file, quote, **kwargs)
+        with mock.patch.object(pipeline_mod, "check_evidence", fake):
+            for sale in (None, "2020-01-01"):
+                trace = self._ask(sale_date=sale)
+                self.assertEqual(trace["decision"], REFUSED, sale)
+                self.assertEqual(trace["refusal_reason"],
+                                 REFUSAL_GOVERNING_INSUFFICIENT)
+            # A current-rule sale does not need the savings clause.
+            self.assertEqual(self._ask(sale_date="2025-01-01")
+                             ["decision"], SUPERSEDED)
+
+    def test_direct_regulation_question_unaffected(self):
+        draft = {"claims": [{"claim": "PED max is 36 months",
+                             "source_file": PRODUCTS, "quote": PED_QUOTE}]}
+        trace = answer("What is the maximum PED waiting period under the "
+                       "2024 product rules?", lang="en",
+                       proposer=fake_proposer(draft),
+                       verifier=fake_backend({"verdict": SUPPORTED,
+                                              "reason": "ok"}))
+        self.assertIsNone(trace["sale_date"])
+        self.assertEqual(trace["decision"], VERIFIED)
+
+
+class TestFix36DateParsing(unittest.TestCase):
+    def setUp(self):
+        try:
+            from verify import saledate
+        except ImportError:
+            import saledate
+        self.sd = saledate
+
+    def _range(self, text):
+        sale = self.sd.parse_text(text)
+        return sale and (sale["earliest"].isoformat(),
+                         sale["latest"].isoformat())
+
+    def test_english(self):
+        self.assertEqual(self._range("I bought it in 2021."),
+                         ("2021-01-01", "2021-12-31"))
+        self.assertEqual(self._range("purchased in March 2021"),
+                         ("2021-03-01", "2021-03-31"))
+        self.assertEqual(self._range("I took the policy on 15 March 2024"),
+                         ("2024-03-15", "2024-03-15"))
+        self.assertEqual(self._range("Policy taken in Feb 2023"),
+                         ("2023-02-01", "2023-02-28"))
+
+    def test_hinglish_and_hindi(self):
+        self.assertEqual(self._range("Maine policy 2025 mein li thi"),
+                         ("2025-01-01", "2025-12-31"))
+        self.assertEqual(self._range("March 2021 mein kharidi"),
+                         ("2021-03-01", "2021-03-31"))
+        self.assertEqual(self._range("मैंने पॉलिसी 2022 में ली थी"),
+                         ("2022-01-01", "2022-12-31"))
+        self.assertEqual(self._range("पॉलिसी २०२० में खरीदी"),
+                         ("2020-01-01", "2020-12-31"))
+
+    def test_no_purchase_word_is_not_a_sale_date(self):
+        for text in ("What is the max PED under the 2024 product rules?",
+                     "What changed since 2021?", "IRDAI 2024 regulations",
+                     "", None):
+            self.assertIsNone(self.sd.parse_text(text), text)
+
+    def test_explicit_iso(self):
+        sale, err = self.sd.resolve("2023-03-31")
+        self.assertIsNone(err)
+        self.assertEqual(sale["precision"], "day")
+        for bad in ("31/03/2023", "2023-3-31", "yesterday", "2023-02-30"):
+            sale, err = self.sd.resolve(bad)
+            self.assertIsNone(sale, bad)
+            self.assertTrue(err, bad)
+
+    def test_classify(self):
+        c = self.sd.classify
+        r = self.sd.resolve
+        self.assertEqual(c(r("2024-04-01")[0], "2024-04-01"), "current")
+        self.assertEqual(c(r("2024-03-31")[0], "2024-04-01"), "older")
+        self.assertEqual(c(None, "2024-04-01"), "unknown")
+        self.assertEqual(c(self.sd.parse_text("bought in 2024"),
+                           "2024-04-01"), "unknown")
+        self.assertEqual(c(self.sd.parse_text("bought in March 2024"),
+                           "2024-04-01"), "older")
+        self.assertEqual(c(self.sd.parse_text("bought in April 2024"),
+                           "2024-04-01"), "current")
+
+
+class TestFix36DemoSaleDate(unittest.TestCase):
+    def _demo(self):
+        try:
+            from verify import demo
+        except ImportError:
+            import demo
+        return demo
+
+    def test_sale_date_flag_reaches_answer_and_is_shown(self):
+        demo = self._demo()
+        trace = {"question": "Q", "decision": "APPLIES_TO_OLDER_CONTRACT",
+                 "claims": [], "final_answer": "older contract",
+                 "sale_date": {"earliest": "2021-06-15",
+                               "latest": "2021-06-15",
+                               "source": "explicit", "precision": "day",
+                               "text": "2021-06-15"},
+                 "savings": [{"citation": "Reg 9(3) cite",
+                              "evidence": {"exists": True,
+                                           "found": True}}]}
+        stream = io.StringIO()
+        with mock.patch("verify.pipeline.answer",
+                        return_value=trace) as ans:
+            code = demo.main(["--sale-date", "2021-06-15", "PED?"],
+                             stream=stream)
+        self.assertEqual(code, 0)
+        self.assertEqual(ans.call_args.kwargs["sale_date"], "2021-06-15")
+        out = stream.getvalue()
+        self.assertIn("FINAL DECISION: APPLIES_TO_OLDER_CONTRACT", out)
+        self.assertIn("Sale date: 2021-06-15", out)
+        self.assertIn("Savings clause: Reg 9(3) cite — evidence FOUND", out)
+
+    def test_invalid_sale_date_is_usage_error(self):
+        demo = self._demo()
+        with mock.patch("verify.pipeline.answer") as ans, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            code = demo.main(["--sale-date", "15/06/2021", "PED?"],
+                             stream=io.StringIO())
+        self.assertEqual(code, 2)
+        ans.assert_not_called()
 
 
 if __name__ == "__main__":
