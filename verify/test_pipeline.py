@@ -570,7 +570,7 @@ class TestFix28VerifierCheapParallel(unittest.TestCase):
         self.assertEqual(payload["response_format"],
                          {"type": "json_object"})
         self.assertEqual(payload["reasoning_effort"], "low")
-        self.assertEqual(payload["max_tokens"], 300)
+        self.assertEqual(payload["max_tokens"], 600)
 
     def test_case_c_calls_run_in_parallel_with_per_call_usage(self):
         import threading
@@ -2153,6 +2153,104 @@ class TestFix26DisplayNormalisation(unittest.TestCase):
                     "monthsof"):
             self.assertNotIn(bad, demo_text.split("Quote:")[1])
         self.assertEqual(demo_trace["claims"][0]["quote"], joined)
+
+
+class TestFix34RobustVerifierJson(unittest.TestCase):
+    """Fix 34: lenient fence stripping, one retry, raw output logged."""
+
+    def _counting(self, outputs):
+        calls = {"n": 0}
+
+        def backend(claim, quote, source_text):
+            out = outputs[min(calls["n"], len(outputs) - 1)]
+            calls["n"] += 1
+            return out
+        return backend, calls
+
+    def test_fenced_json_parses(self):
+        for raw in ('```json\n{"verdict": "SUPPORTED", "reason": "ok"}\n```',
+                    'Here is my answer:\n{"verdict": "CONTRADICTED", '
+                    '"reason": "no"} thanks'):
+            backend, calls = self._counting([raw])
+            r = Verifier(backend).verify("c", "q", "src")
+            self.assertIn(r["verdict"], (SUPPORTED, CONTRADICTED), raw)
+            self.assertNotIn("raw_output", r)
+            self.assertEqual(calls["n"], 1)
+
+    def test_fenced_unknown_verdict_still_rejected(self):
+        for raw in ('```json\n{"verdict": "supported"}\n```',
+                    '{"verdict": "LIKELY_SUPPORTED", "reason": "x"}'):
+            r = Verifier(lambda c, q, s, _r=raw: _r).verify("c", "q", "src")
+            self.assertEqual(r["verdict"], INSUFFICIENT_EVIDENCE, raw)
+
+    def test_truncated_json_retries_then_fails_closed(self):
+        truncated = '{"verdict": "SUPPORTED", "reason": "The passage dir'
+        backend, calls = self._counting([truncated])
+        r = Verifier(backend).verify("c", "q", "src")
+        self.assertEqual(r["verdict"], INSUFFICIENT_EVIDENCE)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(r["attempts"], 2)
+        self.assertEqual(r["raw_output"], truncated)
+
+    def test_retry_recovers_when_second_reply_is_valid(self):
+        backend, calls = self._counting(
+            ["not json", '{"verdict": "SUPPORTED", "reason": "ok"}'])
+        r = Verifier(backend).verify("c", "q", "src")
+        self.assertEqual(r, {"verdict": SUPPORTED, "reason": "ok"})
+        self.assertEqual(calls["n"], 2)
+
+    def test_retry_count_capped_at_one(self):
+        backend, calls = self._counting(["bad"] * 10)
+        r = Verifier(backend).verify("c", "q", "src")
+        self.assertEqual(r["verdict"], INSUFFICIENT_EVIDENCE)
+        self.assertEqual(calls["n"], 2)
+
+    def test_raw_output_truncated_to_500_chars(self):
+        raw = "x" * 2000
+        r = Verifier(lambda c, q, s: raw).verify("c", "q", "src")
+        self.assertEqual(len(r["raw_output"]), 500)
+
+    def test_backend_exception_is_not_retried(self):
+        calls = {"n": 0}
+
+        def boom(claim, quote, source_text):
+            calls["n"] += 1
+            raise RuntimeError("down")
+        r = Verifier(boom).verify("c", "q", "src")
+        self.assertEqual(r["verdict"], INSUFFICIENT_EVIDENCE)
+        self.assertEqual(calls["n"], 1)
+
+    def test_usage_summed_over_retry(self):
+        class Backend:
+            last_latency_s = 0.5
+            last_response_model = "m"
+
+            def __init__(self):
+                self.n = 0
+
+            def __call__(self, claim, quote, source_text):
+                self.n += 1
+                self.last_usage = {"prompt_tokens": 10,
+                                   "completion_tokens": 3,
+                                   "total_tokens": 13}
+                return "bad" if self.n == 1 else (
+                    '{"verdict": "SUPPORTED", "reason": "ok"}')
+        v = Verifier(Backend())
+        v.verify("c", "q", "src")
+        self.assertEqual(v.last_usage["total_tokens"], 26)
+        self.assertAlmostEqual(v.last_latency_s, 1.0)
+
+    def test_raw_output_logged_in_pipeline_trace(self):
+        draft = {"claims": [{"claim": "PED waiting period is at most "
+                             "36 months.", "source_file": PRODUCTS,
+                             "quote": PED_QUOTE}]}
+        trace = answer("PED waiting period?", lang="en",
+                       proposer=fake_proposer(draft),
+                       verifier=Verifier(lambda c, q, s: '{"verdict": '))
+        self.assertEqual(trace["decision"], REFUSED)
+        claim = trace["claims"][0]
+        self.assertEqual(claim["verdict"], INSUFFICIENT_EVIDENCE)
+        self.assertEqual(claim["verifier_raw_output"], '{"verdict": ')
 
 
 if __name__ == "__main__":

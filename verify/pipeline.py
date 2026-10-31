@@ -684,6 +684,8 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         entry["verifier_usage"] = verifier.last_usage
         entry["verifier_latency_s"] = verifier.last_latency_s
         entry["verifier_response_model"] = verifier.last_response_model
+        # Fix 34: raw verifier text when its output was malformed.
+        entry["verifier_raw_output"] = result.get("raw_output")
         trace["verifier_usage"] = verifier.last_usage
         trace["verifier_latency_s"] = verifier.last_latency_s
         # Authority precedence: a superseded source does not govern.
@@ -749,6 +751,8 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
             entry["governing_verifier_usage"] = _g_usage
             entry["governing_verifier_latency_s"] = _g_latency
             entry["governing_verifier_response_model"] = _g_rmodel
+            entry["governing_verifier_raw_output"] = gov_result.get(
+                "raw_output")
             trace["verifier_usage"] = _g_usage
             trace["verifier_latency_s"] = _g_latency
             if gov_result["verdict"] == CONTRADICTED:

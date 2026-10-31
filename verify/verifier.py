@@ -106,32 +106,77 @@ def _insufficient(reason):
     return {"verdict": INSUFFICIENT_EVIDENCE, "reason": reason}
 
 
+# Fix 34: a malformed reply is retried at most this many times.
+MAX_MALFORMED_RETRIES = 1
+RAW_OUTPUT_LOG_CHARS = 500
+
+
+def _loads_lenient(text):
+    """Parse JSON, tolerating ```json fences and leading/trailing text.
+
+    Tries the text as-is, then the first ``{...}`` object found in it
+    (which covers fenced output and a chatty preamble). Raises
+    ``ValueError`` if no JSON value can be decoded.
+    """
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in verifier output")
+    data, _end = json.JSONDecoder().raw_decode(text[start:])
+    return data
+
+
 def _parse_backend_output(raw):
-    """Validate strict-JSON backend output; fail closed if malformed."""
+    """Validate strict-JSON backend output; fail closed if malformed.
+
+    Returns ``(result, malformed)``. The verdict must be exactly one
+    of the three allowed values; anything else is malformed.
+    """
     if isinstance(raw, dict):
         data = raw
     elif isinstance(raw, str):
         try:
-            data = json.loads(raw)
+            data = _loads_lenient(raw)
         except (ValueError, TypeError):
-            return _insufficient(
-                "Verifier output was not valid JSON; failing closed.")
+            return (_insufficient(
+                "Verifier output was not valid JSON; failing closed."),
+                True)
     else:
-        return _insufficient(
-            "Verifier output had an unexpected type; failing closed.")
+        return (_insufficient(
+            "Verifier output had an unexpected type; failing closed."),
+            True)
     if not isinstance(data, dict):
-        return _insufficient(
-            "Verifier output was not a JSON object; failing closed.")
+        return (_insufficient(
+            "Verifier output was not a JSON object; failing closed."),
+            True)
     verdict = data.get("verdict")
     if verdict not in _VERDICTS:
-        return _insufficient(
-            "Verifier output had no valid verdict; failing closed.")
+        return (_insufficient(
+            "Verifier output had no valid verdict; failing closed."),
+            True)
     reason = data.get("reason")
     if reason is not None and not isinstance(reason, str):
-        return _insufficient(
-            "Verifier reason was not a string; failing closed.")
-    return {"verdict": verdict,
-            "reason": reason or "Verifier gave no reason."}
+        return (_insufficient(
+            "Verifier reason was not a string; failing closed."), True)
+    return ({"verdict": verdict,
+             "reason": reason or "Verifier gave no reason."}, False)
+
+
+def _sum_usage(a, b):
+    """Add two ``usage`` dicts (token counts); ``None`` if both absent."""
+    if not isinstance(a, dict):
+        return b
+    if not isinstance(b, dict):
+        return a
+    total = dict(a)
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if key in a or key in b:
+            total[key] = int(a.get(key) or 0) + int(b.get(key) or 0)
+    return total
 
 
 FALLBACK_MODEL = "muse-spark-1.3"
@@ -263,18 +308,36 @@ class Verifier:
         if source_text is None or not str(source_text).strip():
             return _insufficient(
                 "No source text available; failing closed.")
-        try:
-            raw = self._backend(claim, quote, source_text)
-        except Exception as exc:  # backend failure must fail closed
-            return _insufficient(
-                "Verifier backend failed (%s); failing closed."
-                % type(exc).__name__)
-        self.last_usage = getattr(self._backend, "last_usage", None)
-        self.last_latency_s = getattr(
-            self._backend, "last_latency_s", None)
-        self.last_response_model = getattr(
-            self._backend, "last_response_model", None)
-        return _parse_backend_output(raw)
+        # Fix 34: a malformed reply is retried once with the same
+        # request; usage and latency cover every attempt. If the
+        # retry is malformed too, the result fails closed and carries
+        # the raw text (truncated) for the trace.
+        usage = None
+        latency = None
+        for attempt in range(1 + MAX_MALFORMED_RETRIES):
+            try:
+                raw = self._backend(claim, quote, source_text)
+            except Exception as exc:  # backend failure must fail closed
+                return _insufficient(
+                    "Verifier backend failed (%s); failing closed."
+                    % type(exc).__name__)
+            usage = _sum_usage(
+                usage, getattr(self._backend, "last_usage", None))
+            step = getattr(self._backend, "last_latency_s", None)
+            if step is not None:
+                latency = (latency or 0.0) + step
+            self.last_usage = usage
+            self.last_latency_s = latency
+            self.last_response_model = getattr(
+                self._backend, "last_response_model", None)
+            result, malformed = _parse_backend_output(raw)
+            if not malformed:
+                return result
+        result["raw_output"] = (
+            raw[:RAW_OUTPUT_LOG_CHARS] if isinstance(raw, str)
+            else repr(raw)[:RAW_OUTPUT_LOG_CHARS])
+        result["attempts"] = attempt + 1
+        return result
 
 
 def verify_claim(claim, quote, source_text, backend=None):
@@ -325,8 +388,8 @@ class _ModelBackend:
     """OpenAI-compatible verifier backend (Fix 28).
 
     Sends ``response_format`` json_object, ``reasoning_effort``
-    ``"low"`` and ``max_tokens`` 300 — parsing stays strict /
-    fail-closed in :class:`Verifier`. ``last_*`` are thread-local
+    ``"low"`` and ``max_tokens`` 600 (Fix 34; was 300) — parsing
+    stays strict / fail-closed in :class:`Verifier`. ``last_*`` are thread-local
     so parallel calls each keep their own usage/latency.
     """
 
@@ -383,7 +446,7 @@ class _ModelBackend:
                   "temperature": 0,
                   "response_format": {"type": "json_object"},
                   "reasoning_effort": "low",
-                  "max_tokens": 300},
+                  "max_tokens": 600},
             timeout=self._timeout,
         )
         self.last_latency_s = time.monotonic() - started

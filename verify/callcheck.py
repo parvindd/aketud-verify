@@ -792,6 +792,8 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             result = _semantic_verdict(entry)
         entry["verifier_verdict"] = result["verdict"]
         entry["verifier_reason"] = result["reason"]
+        # Fix 34: raw verifier text when its output was malformed.
+        entry["verifier_raw_output"] = result.get("raw_output")
         entry["verifier"] = trace["verifier"]
         entry["verifier_model"] = trace["verifier_model"]
         entry["verifier_fallback"] = trace["verifier_fallback"]
