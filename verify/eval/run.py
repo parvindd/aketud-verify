@@ -31,11 +31,11 @@ tuned after a run to make them pass.
 
 Cost: only verifier tokens are recorded by the pipeline (the
 proposer's Meta API usage is not returned in the trace), so the
-cost figure covers the verifier only. Modal does not bill per
-token; the USD figure is an estimate using a stated assumed
-blended rate (``EVAL_VERIFIER_USD_PER_1M_TOKENS``, default
-0.50 USD per 1M tokens, input + output combined) and is labelled
-as an estimate, not an invoice.
+cost figure covers the verifier only. The verifier runs on a Modal
+Shared Endpoint billed per token: prompt $1.25 / 1M and completion
+$4.25 / 1M (overridable with ``EVAL_VERIFIER_USD_PER_1M_PROMPT`` /
+``EVAL_VERIFIER_USD_PER_1M_COMPLETION``). Cached-prompt discounts
+are ignored, so the figure is an upper bound.
 
 Run: ``python -m verify.eval.run`` (reads ``.env`` like the demo).
 Exit code is 1 when the safety metric is non-zero, else 0.
@@ -110,6 +110,12 @@ def _run_answer(case, verifier):
         "tokens": _trace_tokens(trace, case["kind"]),
         "detail": (trace.get("final_answer") or "")[:300],
         "refusal_reason": trace.get("refusal_reason"),
+        "diagnosis": [
+            {"claim": c.get("claim"), "source": c.get("source_file"),
+             "quote": c.get("quote"),
+             "evidence": c.get("evidence"),
+             "verdict": c.get("verdict"), "reason": c.get("reason")}
+            for c in trace.get("claims") or []],
     }
 
 
@@ -158,8 +164,10 @@ def main(argv=None):
     verifier = Verifier(make_model_backend())
     call_proposer = make_call_proposer()
     proposer_model = os.environ.get("PROPOSER_MODEL") or "muse-spark-1.3"
-    rate = float(os.environ.get(
-        "EVAL_VERIFIER_USD_PER_1M_TOKENS", "0.50"))
+    rate_prompt = float(os.environ.get(
+        "EVAL_VERIFIER_USD_PER_1M_PROMPT", "1.25"))
+    rate_completion = float(os.environ.get(
+        "EVAL_VERIFIER_USD_PER_1M_COMPLETION", "4.25"))
 
     started = datetime.now(timezone.utc)
     results = []
@@ -200,7 +208,15 @@ def main(argv=None):
     tokens_total = sum(r["tokens"]["total"] for r in results)
     tokens_prompt = sum(r["tokens"]["prompt"] for r in results)
     tokens_completion = sum(r["tokens"]["completion"] for r in results)
-    cost_usd = tokens_total / 1_000_000 * rate
+    cost_usd = (tokens_prompt * rate_prompt
+                + tokens_completion * rate_completion) / 1_000_000
+    traps = [r for r in results
+             if r["case"]["kind"] == "adversarial_claim"
+             or r["case"]["category"] == "superseded"]
+    trap_ids = ", ".join(r["case"]["id"] for r in traps)
+    trap_wrong = sum(1 for r in traps if r["wrong_verified"])
+    calls = [r for r in results if r["case"]["kind"] == "call"]
+    call_wrong = sum(1 for r in calls if r["wrong_verified"])
     by_category = {}
     for r in results:
         cat = by_category.setdefault(
@@ -222,20 +238,27 @@ def main(argv=None):
     lines.append("- Accuracy (exact match on expected decision): "
                  "**%d/%d = %.1f%%**" % (passed, total,
                                          100.0 * passed / total))
-    lines.append("- **Wrong answers shown as VERIFIED: %d** "
-                 "(must be 0)" % wrong_verified)
+    lines.append("- **Wrong answers shown as VERIFIED: %d of %d** "
+                 "cases designed to tempt a wrong VERIFIED "
+                 "(superseded + adversarial: %s). Must be 0."
+                 % (trap_wrong, len(traps), trap_ids))
+    lines.append("- Fake-call claims wrongly shown as SUPPORTED BY "
+                 "RULES: %d of %d call cases." % (call_wrong, len(calls)))
+    lines.append("- Any case wrongly VERIFIED / SUPPORTED (all %d "
+                 "cases): %d" % (total, wrong_verified))
     lines.append("- Refusals (REFUSED decisions): %d" % refusals)
     lines.append("- Call cases ending in CANNOT BE CONFIRMED claims: "
                  "%d" % cannot_confirm)
     lines.append("- Verifier tokens: %d total (%d prompt + %d "
                  "completion)" % (tokens_total, tokens_prompt,
                                    tokens_completion))
-    lines.append("- Estimated verifier cost: **$%.4f** "
-                 "(tokens x assumed Modal blended rate of $%.2f per "
-                 "1M tokens; Modal bills GPU time, not tokens, so "
-                 "this is an estimate, not an invoice. Proposer "
-                 "tokens are not recorded in the trace and are "
-                 "excluded.)" % (cost_usd, rate))
+    lines.append("- Verifier cost: **$%.4f** for all %d cases "
+                 "(Modal Shared Endpoint per-token prices: prompt "
+                 "$%.2f/1M, completion $%.2f/1M; cached-prompt "
+                 "discount ignored, so this is an upper bound). "
+                 "Proposer (Meta Model API) tokens are not recorded "
+                 "in the trace and are excluded."
+                 % (cost_usd, total, rate_prompt, rate_completion))
     lines.append("- Median latency per case: %.2fs (min %.2fs, "
                  "max %.2fs)" % (statistics.median(latencies),
                                   min(latencies), max(latencies)))
@@ -277,6 +300,46 @@ def main(argv=None):
                      % (case["id"], case["category"],
                         case.get("lang", ""), expected, r["actual"],
                         r["detail"] or ""))
+        if r.get("refusal_reason"):
+            lines.append("  - Refusal reason: %s" % r["refusal_reason"])
+        for d in r.get("diagnosis") or []:
+            ev = d.get("evidence") or {}
+            lines.append("  - Claim: %s" % d.get("claim"))
+            lines.append("    - Source: %s · evidence exists=%s found=%s"
+                         % (d.get("source"), ev.get("exists"),
+                            ev.get("found")))
+            lines.append("    - Quote: %s" % d.get("quote"))
+            lines.append("    - Verifier: %s — %s"
+                         % (d.get("verdict"), d.get("reason")))
+        if r["case"]["kind"] != "call" and not r.get("diagnosis"):
+            lines.append("  - No claims were drafted.")
+    lines.append("")
+    langs = {}
+    for r in results:
+        cat = r["case"]["category"]
+        langs.setdefault(cat, set()).add(r["case"].get("lang", ""))
+    try:
+        from verify.authority import REGISTRY
+        rule_topics = [rule["topic"] for rule in REGISTRY]
+    except Exception:
+        rule_topics = []
+    lines.append("## Scope and limits")
+    lines.append("")
+    lines.append("- Distinct governing rules exercised: %d (%s)."
+                 % (len(rule_topics), "; ".join(rule_topics)))
+    lines.append("- Superseded cases are one rule (PED waiting period, "
+                 "48 vs 36 months) asked in %d languages."
+                 % len(langs.get("superseded", ())))
+    lines.append("- Adversarial (injected-draft) cases: languages %s."
+                 % ", ".join(sorted(
+                     langs.get("fabricated-quote", set())
+                     | langs.get("misleading-quote", set())
+                     | {r["case"].get("lang", "") for r in results
+                        if r["case"]["kind"] == "adversarial_claim"})))
+    lines.append("- The corpus is small (a few IRDAI documents and one "
+                 "standard-product specimen). These results show the "
+                 "fail-closed behaviour on these rules; they do not "
+                 "generalise to insurance questions outside them.")
     lines.append("")
     lines.append("## Notes")
     lines.append("")
