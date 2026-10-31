@@ -28,12 +28,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 try:
-    from verify.callcheck import check_call
+    from verify.callcheck import (_SAFETY_LABEL, _verified_by_display,
+                                  check_call)
     from verify.demo import _call_models, _draft_claims, load_env
     from verify.pipeline import answer
     from verify.voice import transcribe
 except ImportError:  # run as top-level module (cd verify)
-    from callcheck import check_call
+    from callcheck import _SAFETY_LABEL, _verified_by_display, check_call
     from demo import _call_models, _draft_claims, load_env
     from pipeline import answer
     from voice import transcribe
@@ -112,17 +113,9 @@ def _evidence_label(claim):
     return found, evidence
 
 
-def _verifier_model(trace, claim=None):
-    claim = claim or {}
-    model = claim.get("verifier_model") or trace.get("verifier_model")
-    fallback = claim.get("verifier_fallback")
-    if fallback is None:
-        fallback = trace.get("verifier_fallback")
-    if model:
-        return "%s%s" % (model, " (fallback)" if fallback else "")
-    label = claim.get("verifier") or trace.get("verifier") or ""
-    label = str(label).removeprefix("verifier: ")
-    return label or "(not configured)"
+def _verified_by(trace, claim):
+    """One Stage 3 line: ``verified by: <model>`` or rule only (Fix 35)."""
+    return "verified by: %s" % _esc(_verified_by_display(trace, claim))
 
 
 def _card(title, body_html):
@@ -176,10 +169,10 @@ def render_answer_cards(trace):
                 reason = claim.get("reason") or ""
             items += (
                 "<li>Claim %d: %s &mdash; %s<br>Cited source: %s<br>"
-                "Verifier (model): %s</li>" % (
+                "%s</li>" % (
                     idx, _esc(verdict), _esc(reason),
                     _esc(claim.get("source_file", "")),
-                    _esc(_verifier_model(trace, claim))))
+                    _verified_by(trace, claim)))
         body = "<ol>%s</ol>" % items
     else:
         body = "<p>(no claims to verify)</p>"
@@ -268,14 +261,11 @@ def render_call_cards(trace):
         items = ""
         for idx, claim in enumerate(claims, 1):
             items += (
-                "<li>Claim %d: %s &mdash; %s<br>Verifier (model): %s"
-                "<br>verified by: %s</li>" % (
+                "<li>Claim %d: %s &mdash; %s<br>%s</li>" % (
                     idx,
                     _esc(claim.get("verifier_verdict") or "(not run)"),
                     _esc(claim.get("verifier_reason") or ""),
-                    _esc(_verifier_model(trace, claim)),
-                    _esc(claim.get("verified_by")
-                         or _verifier_model(trace, claim))))
+                    _verified_by(trace, claim)))
         body = "<ol>%s</ol>" % items
     else:
         body = "<p>(no claims to verify)</p>"
@@ -294,21 +284,26 @@ def render_call_cards(trace):
         body = "<p>(no governing rule applies)</p>"
     cards.append(_card("Stage 4 — Governing rule", body))
 
+    # Fix 35: each claim's verdict once, with its reason; the safety
+    # advice once (final_block repeats both, so it is not shown).
     if claims:
-        verdicts = "".join(
-            '<p class="decision" style="color:%s">%s</p>' % (
+        items = "".join(
+            '<li><strong style="color:%s">%s</strong> &mdash; %s'
+            "<br>%s</li>" % (
                 _colour(c.get("verdict", "")),
-                _esc(c.get("verdict_label") or c.get("verdict", "")))
+                _esc(c.get("verdict_label") or c.get("verdict", "")),
+                _esc(c.get("claim_label") or c.get("claim", "")),
+                _esc(c.get("reason") or ""))
             for c in claims)
+        body = "<ol>%s</ol>" % items
     else:
-        verdicts = ('<p class="decision" style="color:%s">'
-                    "CANNOT BE CONFIRMED (ask insurer)</p>"
-                    % _colour("CANNOT BE CONFIRMED (ask insurer)"))
-    body = verdicts
-    if trace.get("final_block"):
-        body += "<pre>%s</pre>" % _esc(trace["final_block"])
+        body = ('<p class="decision" style="color:%s">'
+                "CANNOT BE CONFIRMED (ask insurer)</p>"
+                % _colour("CANNOT BE CONFIRMED (ask insurer)"))
     if trace.get("safety_advice"):
-        body += "<p>%s</p>" % _esc(trace["safety_advice"])
+        body += "<p><strong>%s:</strong> %s</p>" % (
+            _esc(_SAFETY_LABEL.get(trace.get("lang"), "Safety advice")),
+            _esc(trace["safety_advice"]))
     cards.append(_card("Stage 5 — Final decision", body))
     return "\n".join(cards)
 

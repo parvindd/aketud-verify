@@ -56,8 +56,12 @@ def _call_trace():
             "verdict_label": "CONTRADICTS RULES",
             "reason": "IRDAI does not announce bonuses.",
         }],
-        "final_block": "Claim 1: CONTRADICTS RULES",
+        "final_block": ("Claim 1: CONTRADICTS RULES — Caller claims IRDAI "
+                        "is calling about a bonus\n  IRDAI does not "
+                        "announce bonuses.\nSafety advice: Check only "
+                        "with your insurer."),
         "safety_advice": "Check only with your insurer.",
+        "lang": "en",
         "verifier_model": "meta-models/Muse-Spark-Open-816B-A42B",
     }
 
@@ -207,6 +211,86 @@ class TestRunAudio(unittest.TestCase):
         tr.assert_called_once()
         rc.assert_called_once_with("IRDAI bonus call", lang="en")
         self.assertEqual(trace["transcript"], "IRDAI bonus call")
+
+
+def _stage(text, n):
+    """HTML of the Stage ``n`` card."""
+    return text.split("Stage %d" % n)[1].split("</section>")[0]
+
+
+def _post_call(trace):
+    with mock.patch.object(web, "run_call", return_value=trace):
+        _, _, body = web.handle_post(
+            "/check", "application/x-www-form-urlencoded",
+            urlencode({"text": "call", "mode": "call"}).encode())
+    return body.decode("utf-8")
+
+
+class TestFix35TidyResult(unittest.TestCase):
+    def test_call_stage3_one_verified_by_line_per_claim(self):
+        s3 = _stage(_post_call(_call_trace()), 3)
+        self.assertNotIn("Verifier (model)", s3)
+        self.assertEqual(s3.count("verified by:"), 1)
+        self.assertIn(
+            "verified by: meta-models/Muse-Spark-Open-816B-A42B", s3)
+
+    def test_call_stage3_rule_only_claim(self):
+        trace = _call_trace()
+        claim = trace["claims"][0]
+        for key in ("verifier_model", "verifier_verdict",
+                    "verifier_reason"):
+            claim.pop(key)
+        claim["verified_by"] = "rule only (no model)"
+        trace.pop("verifier_model")
+        s3 = _stage(_post_call(trace), 3)
+        self.assertEqual(s3.count("verified by:"), 1)
+        self.assertIn("verified by: rule only (no model)", s3)
+
+    def test_answer_stage3_one_verified_by_line(self):
+        with mock.patch.object(web, "run_answer",
+                               return_value=_answer_trace()):
+            _, _, body = web.handle_post(
+                "/check", "application/x-www-form-urlencoded",
+                urlencode({"text": "Q?", "mode": "answer"}).encode())
+        s3 = _stage(body.decode("utf-8"), 3)
+        self.assertNotIn("Verifier (model)", s3)
+        self.assertEqual(s3.count("verified by:"), 1)
+        self.assertIn(
+            "verified by: meta-models/Muse-Spark-Open-816B-A42B", s3)
+
+    def test_call_stage5_each_verdict_once_with_reason(self):
+        trace = _call_trace()
+        second = dict(trace["claims"][0],
+                      claim="Caller says pay today",
+                      verdict="CANNOT BE CONFIRMED (ask insurer)",
+                      verdict_label="CANNOT BE CONFIRMED (ask insurer)",
+                      reason="Only the insurer can confirm the fee.")
+        trace["claims"].append(second)
+        s5 = _stage(_post_call(trace), 5)
+        self.assertNotIn('class="decision"', s5)
+        self.assertNotIn("<pre>", s5)
+        self.assertEqual(s5.count("CONTRADICTS RULES"), 1)
+        self.assertEqual(s5.count("CANNOT BE CONFIRMED"), 1)
+        self.assertEqual(s5.count("IRDAI does not announce bonuses."), 1)
+        self.assertEqual(
+            s5.count("Only the insurer can confirm the fee."), 1)
+
+    def test_safety_advice_shown_once(self):
+        text = _post_call(_call_trace())
+        self.assertEqual(text.count("Check only with your insurer."), 1)
+        self.assertIn("Safety advice", _stage(text, 5))
+
+    def test_hindi_safety_label(self):
+        trace = _call_trace()
+        trace["lang"] = "hi"
+        self.assertIn("सुरक्षा सलाह", _stage(_post_call(trace), 5))
+
+    def test_no_claims_shows_single_cannot_confirm(self):
+        trace = {"claims": [], "safety_advice": "Ask your insurer.",
+                 "lang": "en"}
+        s5 = _stage(_post_call(trace), 5)
+        self.assertEqual(s5.count("CANNOT BE CONFIRMED"), 1)
+        self.assertEqual(s5.count("Ask your insurer."), 1)
 
 
 if __name__ == "__main__":
