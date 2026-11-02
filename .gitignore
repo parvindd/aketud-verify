@@ -13,3 +13,5 @@ life-corpus/raw/*.pdf
 # call recordings — not committed
 *.wav
 *.m4a
+videos/
+video/
