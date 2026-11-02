@@ -2678,5 +2678,59 @@ class TestFix37DirectGoverningCitation(unittest.TestCase):
                              REFUSAL_GOVERNING_INSUFFICIENT)
 
 
+class TestFix39ProgressEvents(unittest.TestCase):
+    def test_answer_emits_stages_in_order(self):
+        events = []
+        trace = answer("PED?", lang="en",
+                       proposer=fake_proposer({"claims": [{
+                           "claim": "PED max 36 months",
+                           "source_file": PRODUCTS, "quote": PED_QUOTE}]}),
+                       verifier=fake_backend({"verdict": SUPPORTED,
+                                              "reason": "ok"}),
+                       progress=lambda k, d: events.append(k))
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(events, ["draft", "evidence", "verify",
+                                  "governing", "decision"])
+
+    def test_answer_proposer_failure_stops_after_draft(self):
+        events = []
+
+        def broken(question, lang):
+            raise RuntimeError("down")
+        trace = answer("PED?", lang="en", proposer=broken,
+                       verifier=fake_backend({"verdict": SUPPORTED,
+                                              "reason": "ok"}),
+                       progress=lambda k, d: events.append(k))
+        self.assertEqual(trace["decision"], REFUSED)
+        self.assertEqual(events, ["draft"])
+
+    def test_broken_progress_callback_cannot_change_result(self):
+        def bad(stage, detail):
+            raise ValueError("display broke")
+        kwargs = dict(proposer=fake_proposer({"claims": [{
+            "claim": "PED max 36 months", "source_file": PRODUCTS,
+            "quote": PED_QUOTE}]}), verifier=fake_backend(
+                {"verdict": SUPPORTED, "reason": "ok"}))
+        with_cb = answer("PED?", lang="en", progress=bad, **kwargs)
+        without = answer("PED?", lang="en", **kwargs)
+        self.assertEqual(with_cb["decision"], without["decision"])
+        self.assertEqual(with_cb["final_answer"], without["final_answer"])
+
+    def test_callcheck_emits_stages(self):
+        try:
+            from verify import callcheck as cc
+        except ImportError:
+            import callcheck as cc
+        events = []
+        backend = fake_backend({"verdict": CONTRADICTED, "reason": "no"})
+        cc.check_call("IRDAI is calling about your bonus", lang="en",
+                      verifier=backend,
+                      progress=lambda k, d: events.append(k))
+        self.assertEqual(events[0], "extract")
+        self.assertEqual(events[1], "evidence")
+        self.assertIn("verify", events)
+        self.assertEqual(events[-1], "decision")
+
+
 if __name__ == "__main__":
     unittest.main()

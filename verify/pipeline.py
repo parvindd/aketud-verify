@@ -497,6 +497,16 @@ def _build_corrected(records, lang="en"):
     return "\n".join(parts)
 
 
+def emit_progress(progress, stage, detail=None):
+    """Report a stage start to ``progress``; never affects the result."""
+    if progress is None:
+        return
+    try:
+        progress(stage, detail)
+    except Exception:  # a broken progress display must not change answers
+        pass
+
+
 def _refuse(trace, reason, detail=None, exc=None):
     """Finalise ``trace`` as REFUSED with a reason and message."""
     trace["decision"] = REFUSED
@@ -705,8 +715,13 @@ def _normalise_draft(draft):
 
 
 def answer(question, lang=None, *, proposer=None, verifier=None,
-           raw_dir=None, sale_date=None):
+           raw_dir=None, sale_date=None, progress=None):
     """Answer ``question`` fail-closed; return the full trace.
+
+    ``progress`` (Fix 39) is an optional ``(stage, detail)`` callback
+    called as each stage starts: ``draft``, ``evidence``, ``verify``,
+    ``governing``, ``decision``. It only reports; it cannot change the
+    result (exceptions from it are ignored).
 
     ``sale_date`` (Fix 36) is an optional ``YYYY-MM-DD`` string or
     ``datetime.date``; without it the question text is searched
@@ -759,6 +774,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     trace["verifier_model"] = verifier.model
     trace["verifier_fallback"] = verifier.fallback
 
+    emit_progress(progress, "draft")
     try:
         draft = proposer(question, lang)
     except Exception as exc:
@@ -789,6 +805,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     # precedence and refusal order are unchanged.
     jobs = []
     prepared = []
+    emit_progress(progress, "evidence", "%d claim(s)" % len(claims))
     for item in claims:
         entry = {"claim": item["claim"],
                  "source_file": item["source_file"],
@@ -852,6 +869,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                 verifier.last_latency_s,
                 verifier.last_response_model)
 
+    emit_progress(progress, "verify", "%d verifier call(s)" % len(jobs))
     if len(jobs) > 1:
         with ThreadPoolExecutor(
                 max_workers=min(4, len(jobs))) as pool:
@@ -859,6 +877,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     else:
         job_results = [_run_job(job) for job in jobs]
 
+    emit_progress(progress, "governing")
     for work in prepared:
         item = work["item"]
         entry = work["entry"]
@@ -1019,6 +1038,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
                 direct_records.append({"rule": direct, "entry": entry})
         trace["claims"].append(entry)
 
+    emit_progress(progress, "decision")
     if has_refusal:
         return _refuse(
             trace, refusal_reason or REFUSAL_VERIFIER_INSUFFICIENT,

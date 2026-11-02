@@ -14,6 +14,14 @@ as :mod:`verify.demo` — draft -> evidence -> verifier -> governing
 rule -> final decision — as cards, with the final decision in large
 text coloured by outcome.
 
+Fix 39 — live progress: ``POST /check`` starts the check in a
+background thread and returns the page at once with a job id; inline
+JS polls ``GET /status/<id>`` every second. Stages are ticked from
+real ``progress`` events emitted by the pipeline / callcheck (and by
+:func:`run_audio` for transcription), never from a timer. Jobs live
+in memory only and are dropped 10 minutes after they start. The
+server binds to localhost only.
+
 No verification logic lives here: questions go to
 :func:`verify.pipeline.answer` and call transcripts / recordings go
 to :func:`verify.callcheck.check_call` (with the same live-model
@@ -21,8 +29,13 @@ wiring as the CLI demo). API keys are read server-side from ``.env``
 via :func:`verify.demo.load_env` and are never sent to the browser.
 """
 import html
+import json
 import os
+import re
 import tempfile
+import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -71,23 +84,29 @@ def _resolve_lang(lang):
 
 # --- Pipeline seams (mocked in tests; no logic duplicated) ------------
 
-def run_answer(question, lang=None, sale_date=None):
+def _progress_kwargs(progress):
+    return {"progress": progress} if progress is not None else {}
+
+
+def run_answer(question, lang=None, sale_date=None, progress=None):
     """Answer a question via the pipeline (live models from env)."""
     return answer(question, lang=_resolve_lang(lang),
-                  sale_date=sale_date or None)
+                  sale_date=sale_date or None,
+                  **_progress_kwargs(progress))
 
 
-def run_call(transcript, lang=None):
+def run_call(transcript, lang=None, progress=None):
     """Check a call transcript via callcheck (demo's live wiring)."""
     try:
         proposer, verifier = _call_models()
     except Exception:
         proposer, verifier = None, None
     return check_call(transcript, lang=_resolve_lang(lang),
-                      proposer=proposer, verifier=verifier)
+                      proposer=proposer, verifier=verifier,
+                      **_progress_kwargs(progress))
 
 
-def run_audio(audio_bytes, filename, lang=None):
+def run_audio(audio_bytes, filename, lang=None, progress=None):
     """Transcribe an uploaded recording, then check the call."""
     suffix = Path(str(filename or "call.wav")).suffix or ".wav"
     tmp = None
@@ -96,6 +115,8 @@ def run_audio(audio_bytes, filename, lang=None):
                 suffix=suffix, delete=False) as fh:
             fh.write(audio_bytes)
             tmp = fh.name
+        if progress is not None:
+            progress("transcribe", None)
         transcript = transcribe(tmp)
     finally:
         if tmp:
@@ -103,7 +124,7 @@ def run_audio(audio_bytes, filename, lang=None):
                 os.unlink(tmp)
             except OSError:
                 pass
-    trace = run_call(transcript, lang=lang)
+    trace = run_call(transcript, lang=lang, **_progress_kwargs(progress))
     trace["transcript"] = transcript
     return trace
 
@@ -338,6 +359,9 @@ margin:1rem 0}
 .decision{font-size:2rem;font-weight:700;margin:.5rem 0}
 label{display:block;margin:.6rem 0 .2rem;font-weight:600}
 textarea{width:100%}pre{white-space:pre-wrap}
+#stages{list-style:none;padding-left:0}#stages li{margin:.25rem 0}
+#stages .done{color:#137333}#stages .active{font-weight:700}
+#stages .pending,#stages .skipped{color:#5f6368}
 .final{white-space:pre-wrap}
 .error{border-color:#b3261e;color:#b3261e}
 </style></head><body>
@@ -365,7 +389,7 @@ __RESULT__
 
 
 def render_page(trace=None, *, mode="answer", text="", lang="auto",
-                error=None, sale_date=""):
+                error=None, sale_date="", result_html=None):
     """Render the single page, optionally with result cards."""
     lang_options = "".join(
         '<option value="%s"%s>%s</option>' % (
@@ -373,7 +397,9 @@ def render_page(trace=None, *, mode="answer", text="", lang="auto",
             _esc(_LANG_LABELS[code]))
         for code in _LANGS)
     result = ""
-    if error:
+    if result_html is not None:
+        result = result_html
+    elif error:
         result = _card("Error", '<p class="error">%s</p>' % _esc(error))
         result = result.replace('<section class="card">',
                                 '<section class="card error">')
@@ -449,6 +475,213 @@ def parse_request(content_type, body):
     return parse_urlencoded(body or b"")
 
 
+# --- Background jobs with live progress (Fix 39) ----------------------
+
+ANSWER_STAGES = (
+    ("draft", "Drafting with Muse Spark"),
+    ("evidence", "Checking quotes in source PDFs"),
+    ("verify", "Verifying with Muse Spark Open"),
+    ("governing", "Checking governing rules"),
+    ("decision", "Decision"),
+)
+CALL_STAGES = (
+    ("transcribe", "Transcribing with Muse Voice Transcribe"),
+    ("extract", "Extracting caller claims (Muse Spark)"),
+    ("evidence", "Checking quotes"),
+    ("verify", "Verifying with Muse Spark Open"),
+    ("decision", "Decision"),
+)
+JOB_TTL_S = 600
+
+JOBS = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _prune_jobs(now=None):
+    """Drop jobs started more than :data:`JOB_TTL_S` seconds ago."""
+    now = time.monotonic() if now is None else now
+    with _JOBS_LOCK:
+        for job_id in [k for k, j in JOBS.items()
+                       if now - j["created"] > JOB_TTL_S]:
+            del JOBS[job_id]
+
+
+def _new_job(stages):
+    job = {"id": uuid.uuid4().hex, "created": time.monotonic(),
+           "finished": None, "status": "running", "code": None,
+           "html": None, "transcript": None, "thread": None,
+           "stages": [{"key": k, "label": label, "state": "pending",
+                       "started": None, "ended": None, "detail": None}
+                      for k, label in stages]}
+    with _JOBS_LOCK:
+        JOBS[job["id"]] = job
+    return job
+
+
+def _skip(stage, detail=None):
+    stage["state"] = "skipped"
+    if detail:
+        stage["detail"] = detail
+
+
+def _job_progress(job):
+    """``(stage, detail)`` callback that ticks ``job``'s stages.
+
+    Stages only move forward: an event for an earlier stage (callcheck
+    alternates evidence/verify per claim) just updates nothing, and
+    stages jumped over (e.g. no verifier call) are marked skipped.
+    """
+    def progress(key, detail=None):
+        now = time.monotonic()
+        with _JOBS_LOCK:
+            stages = job["stages"]
+            keys = [st["key"] for st in stages]
+            if key not in keys:
+                return
+            idx = keys.index(key)
+            active = next((i for i, st in enumerate(stages)
+                           if st["state"] == "active"), None)
+            if active is not None and idx < active:
+                return
+            if active == idx:
+                if detail:
+                    stages[idx]["detail"] = detail
+                return
+            for st in stages[:idx]:
+                if st["state"] == "active":
+                    st["state"] = "done"
+                    st["ended"] = now
+                elif st["state"] == "pending":
+                    _skip(st)
+            stages[idx].update(state="active", started=now)
+            if detail:
+                stages[idx]["detail"] = detail
+    return progress
+
+
+def _finish_job(job, status, code, result_html, transcript=None):
+    now = time.monotonic()
+    with _JOBS_LOCK:
+        for st in job["stages"]:
+            if st["state"] == "active":
+                st["state"] = "done" if status == "done" else "failed"
+                st["ended"] = now
+            elif st["state"] == "pending":
+                _skip(st)
+        job.update(status=status, code=code, html=result_html,
+                   transcript=transcript, finished=now)
+
+
+def _run_job(job, mode, text, lang, sale_date, audio):
+    """Thread body: run the check, then store the rendered cards."""
+    progress = _job_progress(job)
+    try:
+        if audio is not None:
+            trace = run_audio(audio[2], audio[0], lang=lang,
+                              progress=progress)
+            cards = render_call_cards(trace)
+            transcript = trace.get("transcript")
+        elif mode == "call":
+            trace = run_call(text, lang=lang, progress=progress)
+            cards = render_call_cards(trace)
+            transcript = None
+        else:
+            trace = run_answer(text, lang=lang, sale_date=sale_date,
+                               progress=progress)
+            cards = render_answer_cards(trace)
+            transcript = None
+    except Exception as exc:  # fail visibly, never leak keys/tracebacks
+        _finish_job(job, "error", 502, _error_card(
+            "Check failed: %s" % exc))
+        return
+    _finish_job(job, "done", 200, cards, transcript)
+
+
+def _error_card(message):
+    card = _card("Error", '<p class="error">%s</p>' % _esc(message))
+    return card.replace('<section class="card">',
+                        '<section class="card error">')
+
+
+def job_status(job_id):
+    """JSON-safe status for ``job_id``; ``None`` if unknown/expired."""
+    _prune_jobs()
+    with _JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return None
+        now = job["finished"] or time.monotonic()
+        stages = []
+        for st in job["stages"]:
+            elapsed = None
+            if st["started"] is not None:
+                elapsed = round((st["ended"] or now) - st["started"], 1)
+            stages.append({"key": st["key"], "label": st["label"],
+                           "state": st["state"], "detail": st["detail"],
+                           "elapsed": elapsed})
+        return {"id": job["id"], "status": job["status"],
+                "code": job["code"],
+                "elapsed": round(now - job["created"], 1),
+                "stages": stages, "html": job["html"],
+                "transcript": job["transcript"]}
+
+
+_PROGRESS_HTML = """<section class="card" id="job" data-job="__JOB_ID__">
+<h2 id="job-title">Checking&hellip;</h2>
+<ol id="stages"></ol>
+<p id="elapsed"></p>
+<noscript><p>Enable JavaScript to see live progress, or open
+<a href="/status/__JOB_ID__">/status/__JOB_ID__</a>.</p></noscript>
+</section>
+<div id="result"></div>
+<script>
+(function () {
+  var id = "__JOB_ID__";
+  var marks = {done: "✓", active: "…", pending: "○",
+               skipped: "–", failed: "✗"};
+  function draw(s) {
+    var ol = document.getElementById("stages");
+    ol.innerHTML = "";
+    (s.stages || []).forEach(function (st) {
+      var li = document.createElement("li");
+      li.className = st.state;
+      li.textContent = marks[st.state] + " " + st.label
+        + (st.elapsed !== null ? " (" + st.elapsed.toFixed(1) + " s)" : "")
+        + (st.detail ? " — " + st.detail : "");
+      ol.appendChild(li);
+    });
+    document.getElementById("elapsed").textContent =
+      "Elapsed: " + (s.elapsed || 0).toFixed(0) + " s";
+  }
+  function poll() {
+    fetch("/status/" + id, {cache: "no-store"})
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        draw(s);
+        if (s.status === "running") { setTimeout(poll, 1000); return; }
+        document.getElementById("job-title").textContent =
+          s.status === "done" ? "Done" : "Check failed";
+        document.getElementById("result").innerHTML = s.html || "";
+        if (s.transcript) {
+          document.getElementById("text").value = s.transcript;
+        }
+      })
+      .catch(function (e) {
+        document.getElementById("elapsed").textContent =
+          "Lost contact with the server (" + e + "); retrying…";
+        setTimeout(poll, 2000);
+      });
+  }
+  poll();
+})();
+</script>"""
+
+
+def progress_html(job_id):
+    return _PROGRESS_HTML.replace("__JOB_ID__", _esc(job_id))
+
+
 def handle_get(path):
     """Return (status, content_type, body_bytes) for a GET."""
     route = urlparse(path).path
@@ -457,11 +690,30 @@ def handle_get(path):
             render_page().encode("utf-8")
     if route == "/health":
         return 200, "text/plain; charset=utf-8", b"ok"
+    if route.startswith("/status/"):
+        job_id = route[len("/status/"):]
+        status = (job_status(job_id) if _JOB_ID_RE.match(job_id)
+                  else None)
+        if status is None:
+            status = {"id": job_id, "status": "error", "code": 404,
+                      "elapsed": 0, "stages": [], "transcript": None,
+                      "html": _error_card(
+                          "This check is no longer available (jobs "
+                          "are kept for 10 minutes). Please run it "
+                          "again.")}
+            return 404, "application/json; charset=utf-8", \
+                json.dumps(status).encode("utf-8")
+        return 200, "application/json; charset=utf-8", \
+            json.dumps(status).encode("utf-8")
     return 404, "text/plain; charset=utf-8", b"not found"
 
 
 def handle_post(path, content_type, body):
-    """Return (status, content_type, body_bytes) for a POST."""
+    """Start a check in the background; return the progress page.
+
+    Returns (status, content_type, body_bytes). Bad input is answered
+    at once (400) without starting a job.
+    """
     route = urlparse(path).path
     if route not in ("/", "/check"):
         return 404, "text/plain; charset=utf-8", b"not found"
@@ -475,31 +727,28 @@ def handle_post(path, content_type, body):
         mode = "answer"
     sale_date = (fields.get("sale_date") or "").strip()
     audio = files.get("audio")
-    has_audio = bool(audio and audio[0] and audio[2])
-    try:
-        if has_audio:
-            trace = run_audio(audio[2], audio[0], lang=lang)
-            page = render_page(trace, mode="call",
-                               text=trace.get("transcript", text),
-                               lang=lang)
-            return 200, "text/html; charset=utf-8", page.encode("utf-8")
-        if not text:
-            page = render_page(mode=mode, text=text, lang=lang,
-                               sale_date=sale_date,
-                               error="Please enter a question or call "
-                                     "transcript, or upload a recording.")
-            return 400, "text/html; charset=utf-8", page.encode("utf-8")
-        if mode == "call":
-            trace = run_call(text, lang=lang)
-        else:
-            trace = run_answer(text, lang=lang, sale_date=sale_date)
-    except Exception as exc:  # fail visibly, never leak keys/tracebacks
+    if not (audio and audio[0] and audio[2]):
+        audio = None
+    if audio is None and not text:
         page = render_page(mode=mode, text=text, lang=lang,
                            sale_date=sale_date,
-                           error="Check failed: %s" % exc)
-        return 502, "text/html; charset=utf-8", page.encode("utf-8")
-    page = render_page(trace, mode=mode, text=text, lang=lang,
-                       sale_date=sale_date)
+                           error="Please enter a question or call "
+                                 "transcript, or upload a recording.")
+        return 400, "text/html; charset=utf-8", page.encode("utf-8")
+    if audio is not None:
+        mode = "call"
+    _prune_jobs()
+    job = _new_job(CALL_STAGES if mode == "call" else ANSWER_STAGES)
+    if mode == "call" and audio is None:
+        _skip(job["stages"][0], "text transcript, no recording")
+    thread = threading.Thread(
+        target=_run_job, args=(job, mode, text, lang, sale_date, audio),
+        daemon=True)
+    job["thread"] = thread
+    thread.start()
+    page = render_page(mode=mode, text=text, lang=lang,
+                       sale_date=sale_date,
+                       result_html=progress_html(job["id"]))
     return 200, "text/html; charset=utf-8", page.encode("utf-8")
 
 
@@ -531,6 +780,9 @@ class WebHandler(BaseHTTPRequestHandler):
         pass
 
 
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(prog="python -m verify.web")
@@ -538,6 +790,10 @@ def main(argv=None):
     parser.add_argument("--port", type=int,
                         default=int(os.environ.get("PORT", "8000")))
     args = parser.parse_args(argv)
+    if args.host not in LOCAL_HOSTS:
+        print("Refusing to bind %s: this demo serves localhost only "
+              "(%s)." % (args.host, ", ".join(LOCAL_HOSTS)))
+        return 2
     load_env()
     server = ThreadingHTTPServer((args.host, args.port), WebHandler)
     print("Aketud Verify demo: http://%s:%d" % (args.host, args.port))

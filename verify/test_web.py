@@ -3,6 +3,10 @@
 Run: python3 -m unittest verify.test_web -v
 Pipeline / callcheck / voice are mocked; no live model is called.
 """
+import io
+import json
+import re
+import threading
 import unittest
 from unittest import mock
 from urllib.parse import urlencode
@@ -11,6 +15,24 @@ try:
     from verify import web
 except ImportError:
     import web
+
+
+def _post_wait(path, content_type, body):
+    """POST, wait for the background job, return (code, ctype, html).
+
+    The html is the progress page followed by the job's result cards,
+    i.e. what the browser shows once polling has finished (Fix 39).
+    """
+    status, ctype, page = web.handle_post(path, content_type, body)
+    if status != 200:
+        return status, ctype, page
+    job_id = re.search(rb'data-job="([0-9a-f]{32})"', page).group(1)
+    job_id = job_id.decode()
+    web.JOBS[job_id]["thread"].join(10)
+    _, _, raw = web.handle_get("/status/" + job_id)
+    state = json.loads(raw)
+    return (state["code"], ctype,
+            page + (state["html"] or "").encode("utf-8"))
 
 
 def _answer_trace(decision="VERIFIED"):
@@ -92,7 +114,7 @@ class TestPostAnswer(unittest.TestCase):
     def test_answer_cards_and_decision_colour(self):
         with mock.patch.object(web, "run_answer",
                                return_value=_answer_trace()) as run:
-            status, _, body = web.handle_post(
+            status, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "PED?", "lang": "hi",
                            "mode": "answer"}).encode())
@@ -108,7 +130,7 @@ class TestPostAnswer(unittest.TestCase):
         trace = _answer_trace()
         trace["final_answer"] = "प्री-एग्ज़िस्टिंग डिज़ीज़ 36 महीने"
         with mock.patch.object(web, "run_answer", return_value=trace):
-            status, ctype, body = web.handle_post(
+            status, ctype, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "सवाल?", "lang": "hi",
                            "mode": "answer"}).encode())
@@ -119,7 +141,7 @@ class TestPostAnswer(unittest.TestCase):
     def test_refused_is_red(self):
         with mock.patch.object(web, "run_answer",
                                return_value=_answer_trace("REFUSED")):
-            _, _, body = web.handle_post(
+            _, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "Q?", "mode": "answer"}).encode())
         self.assertIn("#b3261e", body.decode("utf-8"))
@@ -134,7 +156,7 @@ class TestPostAnswer(unittest.TestCase):
     def test_pipeline_error_is_502_not_traceback(self):
         with mock.patch.object(web, "run_answer",
                                side_effect=RuntimeError("boom")):
-            status, _, body = web.handle_post(
+            status, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "Q?", "mode": "answer"}).encode())
         self.assertEqual(status, 502)
@@ -146,7 +168,7 @@ class TestPostCall(unittest.TestCase):
     def test_call_mode_uses_run_call(self):
         with mock.patch.object(web, "run_call",
                                return_value=_call_trace()) as run:
-            status, _, body = web.handle_post(
+            status, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "IRDAI bonus call", "lang": "en",
                            "mode": "call"}).encode())
@@ -171,7 +193,7 @@ class TestPostCall(unittest.TestCase):
             + ("\r\n--%s--\r\n" % boundary).encode())
         with mock.patch.object(web, "run_audio",
                                return_value=_call_trace()) as run:
-            status, _, resp = web.handle_post(
+            status, _, resp = _post_wait(
                 "/check",
                 "multipart/form-data; boundary=%s" % boundary, body)
         self.assertEqual(status, 200)
@@ -193,12 +215,12 @@ class TestPostCall(unittest.TestCase):
             + ("--%s--\r\n" % boundary).encode())
         with mock.patch.object(web, "run_answer",
                                return_value=_answer_trace()) as run:
-            status, _, _ = web.handle_post(
+            status, _, _ = _post_wait(
                 "/check",
                 "multipart/form-data; boundary=%s" % boundary, body)
         self.assertEqual(status, 200)
         run.assert_called_once_with("हिंदी सवाल", lang="auto",
-                                    sale_date="")
+                                    sale_date="", progress=mock.ANY)
 
 
 class TestRunAudio(unittest.TestCase):
@@ -221,7 +243,7 @@ def _stage(text, n):
 
 def _post_call(trace):
     with mock.patch.object(web, "run_call", return_value=trace):
-        _, _, body = web.handle_post(
+        _, _, body = _post_wait(
             "/check", "application/x-www-form-urlencoded",
             urlencode({"text": "call", "mode": "call"}).encode())
     return body.decode("utf-8")
@@ -250,7 +272,7 @@ class TestFix35TidyResult(unittest.TestCase):
     def test_answer_stage3_one_verified_by_line(self):
         with mock.patch.object(web, "run_answer",
                                return_value=_answer_trace()):
-            _, _, body = web.handle_post(
+            _, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "Q?", "mode": "answer"}).encode())
         s3 = _stage(body.decode("utf-8"), 3)
@@ -313,13 +335,14 @@ class TestFix36SaleDate(unittest.TestCase):
             "evidence": {"exists": True, "found": True}}]
         with mock.patch.object(web, "run_answer",
                                return_value=trace) as run:
-            status, _, body = web.handle_post(
+            status, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "PED?", "mode": "answer",
                            "sale_date": "2021-06-15"}).encode())
         self.assertEqual(status, 200)
         run.assert_called_once_with("PED?", lang="auto",
-                                    sale_date="2021-06-15")
+                                    sale_date="2021-06-15",
+                                    progress=mock.ANY)
         text = body.decode("utf-8")
         s5 = text.split("Stage 5")[1]
         self.assertIn("APPLIES_TO_OLDER_CONTRACT", s5)
@@ -332,7 +355,7 @@ class TestFix36SaleDate(unittest.TestCase):
         with mock.patch.object(
                 web, "run_answer",
                 return_value=_answer_trace("DEPENDS_ON_SALE_DATE")):
-            _, _, body = web.handle_post(
+            _, _, body = _post_wait(
                 "/check", "application/x-www-form-urlencoded",
                 urlencode({"text": "PED?", "mode": "answer"}).encode())
         s5 = body.decode("utf-8").split("Stage 5")[1]
@@ -347,6 +370,167 @@ class TestFix36SaleDate(unittest.TestCase):
                          {"lang": "en", "sale_date": "2021-01-01"})
         self.assertEqual(ans.call_args_list[1].kwargs,
                          {"lang": None, "sale_date": None})
+
+
+class TestFix39LiveProgress(unittest.TestCase):
+    def _status(self, job_id):
+        code, ctype, raw = web.handle_get("/status/" + job_id)
+        self.assertIn("application/json", ctype)
+        return code, json.loads(raw)
+
+    def _start(self, fields):
+        status, _, page = web.handle_post(
+            "/check", "application/x-www-form-urlencoded",
+            urlencode(fields).encode())
+        self.assertEqual(status, 200)
+        text = page.decode("utf-8")
+        job_id = re.search(r'data-job="([0-9a-f]{32})"', text).group(1)
+        return job_id, text
+
+    def test_post_returns_at_once_and_stages_follow_real_events(self):
+        gate = {k: threading.Event() for k in ("evidence", "verify",
+                                               "finish")}
+        reached = {k: threading.Event() for k in ("draft", "evidence",
+                                                  "verify")}
+
+        def slow_answer(text, lang=None, sale_date=None, progress=None):
+            progress("draft", None)
+            reached["draft"].set()
+            gate["evidence"].wait(5)
+            progress("evidence", "1 claim(s)")
+            reached["evidence"].set()
+            gate["verify"].wait(5)
+            progress("verify", "1 verifier call(s)")
+            reached["verify"].set()
+            gate["finish"].wait(5)
+            return _answer_trace()
+
+        with mock.patch.object(web, "run_answer", slow_answer):
+            job_id, page = self._start({"text": "PED?", "mode": "answer"})
+            # The page comes back before the check finishes.
+            self.assertIn("/status/", page)
+            self.assertIn("setTimeout(poll, 1000)", page)
+            self.assertIn("Checking", page)
+            self.assertTrue(reached["draft"].wait(5))
+            _, st = self._status(job_id)
+            self.assertEqual(st["status"], "running")
+            self.assertEqual([x["state"] for x in st["stages"]],
+                             ["active", "pending", "pending", "pending",
+                              "pending"])
+            self.assertEqual(st["stages"][0]["label"],
+                             "Drafting with Muse Spark")
+            gate["evidence"].set()
+            self.assertTrue(reached["evidence"].wait(5))
+            _, st = self._status(job_id)
+            self.assertEqual([x["state"] for x in st["stages"][:3]],
+                             ["done", "active", "pending"])
+            self.assertEqual(st["stages"][1]["detail"], "1 claim(s)")
+            self.assertIsNotNone(st["stages"][0]["elapsed"])
+            gate["verify"].set()
+            self.assertTrue(reached["verify"].wait(5))
+            _, st = self._status(job_id)
+            self.assertEqual(st["stages"][2]["state"], "active")
+            self.assertIsNone(st["html"])
+            gate["finish"].set()
+            web.JOBS[job_id]["thread"].join(5)
+        code, st = self._status(job_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(st["status"], "done")
+        self.assertEqual(st["code"], 200)
+        # Stages never reached (governing, decision) are not faked.
+        self.assertEqual([x["state"] for x in st["stages"]],
+                         ["done", "done", "done", "skipped", "skipped"])
+        self.assertIn("Stage 5 — Final decision", st["html"])
+        self.assertIn("VERIFIED", st["html"])
+
+    def test_error_shows_message_not_blank(self):
+        def boom(*a, **k):
+            raise RuntimeError("model endpoint down")
+        with mock.patch.object(web, "run_answer", boom):
+            job_id, _ = self._start({"text": "Q?", "mode": "answer"})
+            web.JOBS[job_id]["thread"].join(5)
+        _, st = self._status(job_id)
+        self.assertEqual(st["status"], "error")
+        self.assertEqual(st["code"], 502)
+        self.assertIn("model endpoint down", st["html"])
+        self.assertNotIn("Traceback", st["html"])
+
+    def test_call_text_skips_transcription_and_ticks_callcheck(self):
+        def fake_call(text, lang=None, progress=None):
+            for key in ("extract", "evidence", "verify", "evidence",
+                        "verify", "decision"):
+                progress(key, None)
+            return _call_trace()
+        with mock.patch.object(web, "run_call", fake_call):
+            job_id, _ = self._start({"text": "IRDAI call",
+                                     "mode": "call"})
+            web.JOBS[job_id]["thread"].join(5)
+        _, st = self._status(job_id)
+        self.assertEqual(
+            [x["label"] for x in st["stages"]],
+            ["Transcribing with Muse Voice Transcribe",
+             "Extracting caller claims (Muse Spark)", "Checking quotes",
+             "Verifying with Muse Spark Open", "Decision"])
+        self.assertEqual([x["state"] for x in st["stages"]],
+                         ["skipped", "done", "done", "done", "done"])
+        self.assertEqual(st["stages"][0]["detail"],
+                         "text transcript, no recording")
+        self.assertIn("CONTRADICTS RULES", st["html"])
+
+    def test_audio_job_reports_transcription_and_transcript(self):
+        def fake_transcribe(path):
+            return "IRDAI bonus call"
+
+        def fake_call(text, lang=None, progress=None):
+            progress("extract", None)
+            return _call_trace()
+        with mock.patch.object(web, "transcribe", fake_transcribe), \
+                mock.patch.object(web, "run_call", fake_call):
+            job = web._new_job(web.CALL_STAGES)
+            web._run_job(job, "call", "", "en", "",
+                         ("call.wav", "audio/wav", b"RIFF"))
+        st = web.job_status(job["id"])
+        self.assertEqual(st["stages"][0]["state"], "done")
+        self.assertEqual(st["transcript"], "IRDAI bonus call")
+
+    def test_unknown_or_bad_id_is_404_json_with_message(self):
+        for job_id in ("0" * 32, "../etc", "nope"):
+            code, st = self._status(job_id)
+            self.assertEqual(code, 404)
+            self.assertEqual(st["status"], "error")
+            self.assertIn("no longer available", st["html"])
+
+    def test_jobs_dropped_after_ten_minutes(self):
+        job = web._new_job(web.ANSWER_STAGES)
+        web._prune_jobs(now=job["created"] + 599)
+        self.assertIn(job["id"], web.JOBS)
+        web._prune_jobs(now=job["created"] + 601)
+        self.assertNotIn(job["id"], web.JOBS)
+
+    def test_empty_input_answered_at_once_without_job(self):
+        before = len(web.JOBS)
+        status, _, _ = web.handle_post(
+            "/check", "application/x-www-form-urlencoded",
+            urlencode({"text": "", "mode": "answer"}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(len(web.JOBS), before)
+
+    def test_progress_ignores_backwards_and_unknown_events(self):
+        job = web._new_job(web.ANSWER_STAGES)
+        progress = web._job_progress(job)
+        progress("verify", None)
+        progress("draft", None)       # backwards: ignored
+        progress("nonsense", None)    # unknown: ignored
+        states = [x["state"] for x in job["stages"]]
+        self.assertEqual(states, ["skipped", "skipped", "active",
+                                  "pending", "pending"])
+
+    def test_server_binds_localhost_only(self):
+        with mock.patch.object(web, "ThreadingHTTPServer") as srv, \
+                mock.patch.object(web, "load_env", lambda: {}), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(web.main(["--host", "0.0.0.0"]), 2)
+            srv.assert_not_called()
 
 
 if __name__ == "__main__":

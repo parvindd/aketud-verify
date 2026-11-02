@@ -651,8 +651,12 @@ def claim_label(claim, lang="en"):
 
 
 def check_call(transcript, lang=None, *, proposer=None, verifier=None,
-               raw_dir=None):
+               raw_dir=None, progress=None):
     """Check a fake-call ``transcript``; return the call trace.
+
+    ``progress`` (Fix 39) is an optional ``(stage, detail)`` callback
+    called as each stage starts: ``extract``, ``evidence``, ``verify``
+    (per claim sent to the verifier), ``decision``. It only reports.
 
     ``proposer`` is ``(transcript, lang) -> draft`` extracting the
     caller's claims (injectable for offline tests); the default is
@@ -673,15 +677,17 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
     ``CANNOT BE CONFIRMED`` regardless of model output.
     """
     try:
-        from verify.pipeline import normalize_lang
+        from verify.pipeline import emit_progress, normalize_lang
     except ImportError:
-        from pipeline import normalize_lang
+        from pipeline import emit_progress, normalize_lang
     lang = normalize_lang(lang, transcript)
     product = detect_product_type(transcript)
     trace = {"transcript": transcript, "question": transcript,
              "lang": lang, "product_type": product, "claims": [],
              "safety_advice": safety_advice_for(lang)}
 
+    emit_progress(progress, "extract",
+                  None if proposer is not None else EXTRACTED_BY_KEYWORD)
     if proposer is not None:
         proposer_label = (
             getattr(proposer, "extracted_by", None)
@@ -741,7 +747,8 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
         else None)
     trace["proposer_label"] = proposer_label
 
-    for item in extracted:
+    emit_progress(progress, "evidence", "%d claim(s)" % len(extracted))
+    for item_no, item in enumerate(extracted, 1):
         entry = dict(item)
         entry.setdefault("kind", _infer_kind(entry.get("claim")))
         if not entry.get("extracted_by"):
@@ -786,6 +793,8 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
             continue
         source_text = extract_text(entry["source_file"], raw_dir=raw_dir)
         if backend is not None:
+            emit_progress(progress, "verify", "claim %d of %d"
+                          % (item_no, len(extracted)))
             result = backend.verify(
                 entry["claim"], entry["quote"], source_text)
         else:
@@ -814,6 +823,7 @@ def check_call(transcript, lang=None, *, proposer=None, verifier=None,
                 result["verdict"], CANNOT_BE_CONFIRMED)
         trace["claims"].append(entry)
 
+    emit_progress(progress, "decision")
     for _c in trace["claims"]:
         _c["verdict_label"] = verdict_label(_c.get("verdict", ""), lang)
         _c["claim_label"] = claim_label(_c, lang)
