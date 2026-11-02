@@ -218,8 +218,8 @@ def render_answer_cards(trace):
                 "&mdash; %s<br>Governing quote: %s</li>" % (
                     idx, _esc(claim.get("governing_source", "")),
                     _esc(claim.get("governing_title", "")),
-                    _esc(claim.get("governing_effective_display", "")),
-                    _esc(claim.get("governing_effective_date", "")),
+                    _esc(claim.get("governing_effective_display")
+                         or claim.get("governing_effective_date", "")),
                     "FOUND" if gov_found else "NOT FOUND",
                     _esc(claim.get("governing_verdict") or "(none)"),
                     _esc(claim.get("governing_reason") or ""),

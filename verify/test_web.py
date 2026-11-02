@@ -533,5 +533,67 @@ class TestFix39LiveProgress(unittest.TestCase):
             srv.assert_not_called()
 
 
+class TestGoverningCardRendering(unittest.TestCase):
+    """Regression: the Stage 4 governing card had one format argument
+    too many, so every trace with a governing rule raised TypeError
+    and the page showed "Check failed" instead of the result."""
+
+    PED_QUOTE = (
+        "Waiting period for pre-existing diseases disclosed by the "
+        "persons to be insured, shall be maximum up to 36 months of "
+        "continuous coverage under the Health Insurance policy.")
+    AROGYA_48_QUOTE = (
+        "Expenses related to the treatment of a pre-existing Disease "
+        "(PED) and its direct complications shall be excluded until the "
+        "expiry of 48 months of continuous coverage after the date of "
+        "inception of the first policy with us.")
+
+    def _trace(self, sale_date):
+        try:
+            from verify.pipeline import answer
+        except ImportError:
+            from pipeline import answer
+        draft = {"claims": [{"claim": "PED waiting period is 48 months",
+                             "source_file": "arogya-sanjeevani-hdfc-ergo.pdf",
+                             "quote": self.AROGYA_48_QUOTE}]}
+
+        def backend(claim, quote, source_text):
+            if quote == self.PED_QUOTE:
+                return json.dumps({"verdict": "CONTRADICTED",
+                                   "reason": "caps PED at 36 months"})
+            return json.dumps({"verdict": "SUPPORTED",
+                               "reason": "Arogya says 48."})
+        return answer("What is the PED waiting period?", lang="en",
+                      proposer=lambda q, lang: draft, verifier=backend,
+                      sale_date=sale_date)
+
+    def test_governing_traces_render_without_error(self):
+        for sale_date, decision in (
+                (None, "DEPENDS_ON_SALE_DATE"),
+                ("2021-06-15", "APPLIES_TO_OLDER_CONTRACT"),
+                ("2025-01-10", "SUPERSEDED")):
+            trace = self._trace(sale_date)
+            self.assertEqual(trace["decision"], decision)
+            page = web.render_page(trace)  # must not raise
+            s4 = page.split("Stage 4")[1].split("</section>")[0]
+            self.assertIn("in force from 1 April 2024", s4, decision)
+            self.assertIn("Governing evidence: FOUND", s4, decision)
+            self.assertIn("Governing verdict: CONTRADICTED", s4, decision)
+            self.assertIn(self.PED_QUOTE, s4, decision)
+            self.assertIn(decision, page.split("Stage 5")[1])
+
+    def test_effective_date_used_when_display_missing(self):
+        trace = _answer_trace("SUPERSEDED")
+        trace["claims"][0].update(
+            governing_source="irdai-insurance-products-regulations-2024.pdf",
+            governing_title="IRDAI (Insurance Products) Regulations, 2024",
+            governing_effective_date="2024-04-01",
+            governing_verdict="CONTRADICTED",
+            governing_evidence={"exists": True, "found": True})
+        s4 = web.render_answer_cards(trace).split("Stage 4")[1]
+        self.assertIn("(IRDAI (Insurance Products) Regulations, 2024, "
+                      "2024-04-01)", s4)
+
+
 if __name__ == "__main__":
     unittest.main()
