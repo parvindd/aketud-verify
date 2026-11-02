@@ -108,6 +108,9 @@ REGISTRY = [
         "gazette": "Gazette No. 206",
         "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
         "short_ref": "Reg 7",
+        "cap_label": {"en": "The 36-month cap",
+                      "hi": "36 महीने की अधिकतम सीमा",
+                      "hinglish": "36 months ki maximum limit"},
         **_PRODUCTS_SAVINGS,
     },
     {
@@ -470,6 +473,34 @@ def governing_for(source_file, text=None, quote=None):
             continue
         out.append(rule)
     return out
+
+
+def _squash(text):
+    return "".join(ch.lower() for ch in str(text or "")
+                   if not ch.isspace())
+
+
+def direct_governing_rule(source_file, quote, min_chars=20):
+    """Fix 37: the rule ``quote`` cites directly, if any.
+
+    A claim cites a rule directly when it cites the rule's own source
+    and its quote overlaps the rule's quote (one contains the other,
+    whitespace/case-insensitive; at least ``min_chars`` characters).
+    Only rules with ``applies_from`` and a savings clause qualify:
+    those are the rules whose reach depends on the sale date.
+    """
+    needle = _squash(quote)
+    if len(needle) < min_chars:
+        return None
+    for rule in REGISTRY:
+        if (rule.get("source_file") != source_file
+                or not rule.get("applies_from")
+                or not rule.get("savings_quote")):
+            continue
+        hay = _squash(rule.get("quote"))
+        if needle in hay or hay in needle:
+            return rule
+    return None
 
 
 def is_superseded_source(source_file):

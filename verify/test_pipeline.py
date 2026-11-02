@@ -2571,5 +2571,112 @@ class TestFix36DemoSaleDate(unittest.TestCase):
         ans.assert_not_called()
 
 
+class TestFix37DirectGoverningCitation(unittest.TestCase):
+    """Fix 37: sale-date check when a claim cites Reg 7 directly."""
+
+    SAVINGS = TestFix36SaleDatePrecedence.SAVINGS
+
+    def _ask(self, question, lang="en", **kwargs):
+        draft = {"claims": [{"claim": "PED waiting period is at most "
+                             "36 months", "source_file": PRODUCTS,
+                             "quote": PED_QUOTE}]}
+        return answer(question, lang=lang,
+                      proposer=fake_proposer(draft),
+                      verifier=fake_backend({"verdict": SUPPORTED,
+                                             "reason": "ok"}), **kwargs)
+
+    def test_2021_direct_citation_is_older_contract_en(self):
+        trace = self._ask("I bought my policy in 2021. Max PED waiting "
+                          "period?")
+        self.assertEqual(trace["decision"], APPLIES_TO_OLDER_CONTRACT)
+        msg = trace["final_answer"]
+        self.assertTrue(msg.startswith(
+            "The 36-month cap applies to contracts from 1 April 2024 "
+            "(Reg 7); a policy bought in 2021 keeps its contract terms "
+            "(Reg 9(3)) — check your policy document."), msg)
+        self.assertIn(PED_QUOTE, msg)
+        self.assertIn(self.SAVINGS, msg)
+        kinds = {c["kind"]: c["evidence"]["found"]
+                 for c in trace["savings"]}
+        self.assertEqual(kinds, {"governing rule": True,
+                                 "savings clause": True})
+
+    def test_explicit_day_uses_on(self):
+        trace = self._ask("Max PED waiting period?",
+                          sale_date="2021-06-15")
+        self.assertEqual(trace["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("a policy bought on 15 June 2021 keeps",
+                      trace["final_answer"])
+
+    def test_2021_direct_citation_hi_and_hinglish(self):
+        hi = self._ask("मैंने पॉलिसी 2021 में ली थी। अधिकतम वेटिंग "
+                       "पीरियड?", lang="hi")
+        self.assertEqual(hi["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("36 महीने की अधिकतम सीमा 1 अप्रैल 2024 से",
+                      hi["final_answer"])
+        self.assertIn("अपना पॉलिसी डॉक्यूमेंट देखें", hi["final_answer"])
+        hg = self._ask("Maine policy 2021 mein li thi, maximum waiting "
+                       "period kitna hai?", lang="hinglish")
+        self.assertEqual(hg["decision"], APPLIES_TO_OLDER_CONTRACT)
+        self.assertIn("36 months ki maximum limit 1 April 2024 se",
+                      hg["final_answer"])
+        self.assertIn("apna policy document check karein",
+                      hg["final_answer"])
+
+    def test_2025_direct_citation_is_verified(self):
+        for kwargs in ({"sale_date": "2025-01-10"}, {}):
+            trace = self._ask("Maine policy 2025 mein li thi, waiting "
+                              "period?", lang="hinglish", **kwargs)
+            self.assertEqual(trace["decision"], VERIFIED, kwargs)
+
+    def test_no_sale_date_direct_citation_unchanged(self):
+        trace = self._ask("What is the maximum PED waiting period under "
+                          "the 2024 product rules?")
+        self.assertIsNone(trace["sale_date"])
+        self.assertEqual(trace["decision"], VERIFIED)
+        self.assertEqual(trace["savings"], [])
+
+    def test_straddling_year_depends(self):
+        trace = self._ask("I bought it in 2024. Max PED waiting period?")
+        self.assertEqual(trace["decision"], DEPENDS_ON_SALE_DATE)
+        self.assertIn("depends on the exact sale date",
+                      trace["final_answer"])
+
+    def test_unrelated_regulation_quote_not_date_checked(self):
+        draft = {"claims": [{"claim": "Products regs are in force",
+                             "source_file": PRODUCTS,
+                             "quote": "These regulations may be called"}]}
+        trace = answer("Policy bought in 2021: what are these rules?",
+                       lang="en", proposer=fake_proposer(draft),
+                       verifier=fake_backend({"verdict": SUPPORTED,
+                                              "reason": "ok"}))
+        self.assertNotEqual(trace["decision"], APPLIES_TO_OLDER_CONTRACT)
+
+    def test_evidence_failure_refuses(self):
+        try:
+            import verify.pipeline as pipeline_mod
+        except ImportError:
+            import pipeline as pipeline_mod
+        real = pipeline_mod.check_evidence
+        for missing in (PED_QUOTE, self.SAVINGS):
+            calls = {"n": 0}
+
+            def fake(source_file, quote, _m=missing, **kwargs):
+                # The claim's own (first) check of PED_QUOTE passes;
+                # the Fix 37 re-check of the missing quote fails.
+                if quote == _m:
+                    calls["n"] += 1
+                    if _m != PED_QUOTE or calls["n"] > 1:
+                        return {"exists": True, "found": False,
+                                "page_text_hash": None}
+                return real(source_file, quote, **kwargs)
+            with mock.patch.object(pipeline_mod, "check_evidence", fake):
+                trace = self._ask("Max PED period?",
+                                  sale_date="2021-01-01")
+            self.assertEqual(trace["decision"], REFUSED, missing[:20])
+            self.assertEqual(trace["refusal_reason"],
+                             REFUSAL_GOVERNING_INSUFFICIENT)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,14 @@
    Neither new decision is ever ``VERIFIED``, and both require the
    savings clause to pass its own evidence check (else ``REFUSED``).
 
+   Fix 37 — a would-be ``VERIFIED`` claim that cites a governing rule
+   directly (e.g. Reg 7 itself) is also date-checked when a sale date
+   is known: sold before ``applies_from`` ->
+   ``APPLIES_TO_OLDER_CONTRACT``; a sale range that straddles it ->
+   ``DEPENDS_ON_SALE_DATE``. Both the rule quote and the savings
+   clause are evidence-checked (else ``REFUSED``). No sale date, or
+   sold on/after ``applies_from``: unchanged (``VERIFIED``).
+
 Fail closed: anything not proven ``SUPPORTED`` is never shown as
 verified. A ``REFUSED`` result carries no verified answer text; its
 ``final_answer`` is the refusal message described above.
@@ -71,7 +79,7 @@ try:
                                   governing_for, governing_title,
                                   source_title,
                                   topic_detection_uncertain)
-    from verify.authority import short_source_name
+    from verify.authority import direct_governing_rule, short_source_name
     from verify.evidence import check_evidence, extract_text
     from verify import saledate
     from verify.verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
@@ -81,7 +89,7 @@ except ImportError:  # run as top-level modules (cd verify; unittest)
     from authority import (REGISTRY, effective_display, governing_for,
                            governing_title, source_title,
                            topic_detection_uncertain)
-    from authority import short_source_name
+    from authority import direct_governing_rule, short_source_name
     from evidence import check_evidence, extract_text
     import saledate
     from verifier import (CONTRADICTED, INSUFFICIENT_EVIDENCE,
@@ -356,6 +364,81 @@ def _build_older(records, sale, lang="en"):
         parts.append(sentence + "\n" + _quote_lines([
             (rec["cited_title"], rec["cited_quote"]),
             (rec["governing_title"], rec["governing_quote"]),
+            (rule["savings_citation"], rule["savings_quote"])]))
+    return "\n".join(parts)
+
+
+_DEFAULT_CAP = {"en": "This rule", "hi": "यह नियम",
+                "hinglish": "Yeh rule"}
+
+
+def _build_direct(records, sale, decision, lang="en"):
+    """Fix 37 answer for a claim citing a governing rule directly."""
+    parts = []
+    when = saledate.display(sale, lang)
+    day = sale["precision"] == "day"
+    seen = set()
+    for rec in records:
+        rule = rec["rule"]
+        if id(rule) in seen:
+            continue
+        seen.add(id(rule))
+        since = saledate.date_display(rule["applies_from"], lang)
+        cap = (rule.get("cap_label") or _DEFAULT_CAP).get(
+            lang, (rule.get("cap_label") or _DEFAULT_CAP)["en"])
+        ref = (rule.get("short_ref") or rule.get("citation")
+               or governing_title(rule["source_file"]))
+        sref = rule["savings_ref"]
+        older = decision == APPLIES_TO_OLDER_CONTRACT
+        if lang == "hi":
+            if older:
+                sentence = (
+                    "%s %s से बने कॉन्ट्रैक्ट पर लागू है (%s); %s %s "
+                    "खरीदी गई पॉलिसी पर उसके कॉन्ट्रैक्ट की शर्तें "
+                    "लागू रहती हैं (%s) — अपना पॉलिसी डॉक्यूमेंट देखें।"
+                    % (cap, since, ref, when, "को" if day else "में",
+                       sref))
+            else:
+                sentence = (
+                    "%s %s से बने कॉन्ट्रैक्ट पर लागू है (%s); %s में "
+                    "खरीदी गई पॉलिसी के लिए यह सही सेल डेट पर निर्भर "
+                    "है — पहले की पॉलिसियों पर उनके कॉन्ट्रैक्ट की "
+                    "शर्तें लागू रहती हैं (%s)। अपना पॉलिसी डॉक्यूमेंट "
+                    "देखें।" % (cap, since, ref, when, sref))
+        elif lang == "hinglish":
+            if older:
+                sentence = (
+                    "%s %s se bane contracts par lagu hai (%s); %s %s "
+                    "li gayi policy par uske contract ki terms lagu "
+                    "rehti hain (%s) — apna policy document check "
+                    "karein." % (cap, since, ref, when,
+                                 "ko" if day else "mein", sref))
+            else:
+                sentence = (
+                    "%s %s se bane contracts par lagu hai (%s); %s mein "
+                    "li gayi policy ke liye yeh exact sale date par "
+                    "depend karta hai — pehle ki policies par unke "
+                    "contract ki terms lagu rehti hain (%s). Apna "
+                    "policy document check karein."
+                    % (cap, since, ref, when, sref))
+        else:
+            if older:
+                sentence = (
+                    "%s applies to contracts from %s (%s); a policy "
+                    "bought %s %s keeps its contract terms (%s) — check "
+                    "your policy document."
+                    % (cap, since, ref, "on" if day else "in", when,
+                       sref))
+            else:
+                sentence = (
+                    "%s applies to contracts from %s (%s); for a policy "
+                    "bought in %s it depends on the exact sale date — "
+                    "policies bought earlier keep their contract terms "
+                    "(%s). Check your policy document."
+                    % (cap, since, ref, when, sref))
+        parts.append(sentence + "\n" + _quote_lines([
+            (rule.get("citation") or governing_title(rule["source_file"]),
+             rule["quote"]),
             (rule["savings_citation"], rule["savings_quote"])]))
     return "\n".join(parts)
 
@@ -698,6 +781,7 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
     has_contradicted = False
     has_superseded = False
     corrected_records = []
+    direct_records = []  # Fix 37: SUPPORTED claims citing a rule directly
     superseded_records = []
     # Fix 28: collect every verifier call (cited + governing) first,
     # run them in parallel on a small pool, then replay the results
@@ -928,6 +1012,11 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         elif result["verdict"] != SUPPORTED:
             entry["refusal_reason"] = REFUSAL_VERIFIER_INSUFFICIENT
             _note_refusal(REFUSAL_VERIFIER_INSUFFICIENT)
+        else:
+            direct = direct_governing_rule(item["source_file"],
+                                           item["quote"])
+            if direct is not None:
+                direct_records.append({"rule": direct, "entry": entry})
         trace["claims"].append(entry)
 
     if has_refusal:
@@ -982,6 +1071,40 @@ def answer(question, lang=None, *, proposer=None, verifier=None,
         trace["correction"] = _build_corrected(corrected_records, lang)
         trace["final_answer"] = trace["correction"]
     else:
+        # Fix 37: a direct governing citation still depends on when
+        # the policy was sold, but only once a sale date is known.
+        branches = ([saledate.classify(sale, rec["rule"]["applies_from"])
+                     for rec in direct_records] if sale else [])
+        if saledate.OLDER in branches or saledate.UNKNOWN in branches:
+            trace["sale_date_branch"] = branches
+            for rec in direct_records:
+                rule = rec["rule"]
+                checks = (("governing rule", rule["source_file"],
+                           rule.get("citation") or governing_title(
+                               rule["source_file"]), rule["quote"]),
+                          ("savings clause", rule["savings_source"],
+                           rule["savings_citation"],
+                           rule["savings_quote"]))
+                for kind, source, citation, quote in checks:
+                    ev = check_evidence(source, quote, raw_dir=raw_dir)
+                    trace["savings"].append({
+                        "kind": kind, "source_file": source,
+                        "citation": citation, "quote": quote,
+                        "evidence": ev})
+                    if not (ev["exists"] and ev["found"]):
+                        return _refuse(
+                            trace, REFUSAL_GOVERNING_INSUFFICIENT,
+                            detail="%s evidence check failed "
+                                   "(exists=%s, found=%s)."
+                                   % (kind, ev["exists"], ev["found"]))
+            if saledate.UNKNOWN in branches:
+                trace["decision"] = DEPENDS_ON_SALE_DATE
+            else:
+                trace["decision"] = APPLIES_TO_OLDER_CONTRACT
+            trace["correction"] = _build_direct(
+                direct_records, sale, trace["decision"], lang)
+            trace["final_answer"] = trace["correction"]
+            return trace
         trace["decision"] = VERIFIED
         trace["final_answer"] = _build_verified(trace["claims"], lang)
     return trace
