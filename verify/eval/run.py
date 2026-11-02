@@ -44,9 +44,16 @@ covers ``cases.jsonl`` only. ``cases.jsonl`` predates Fix 36 and is
 not edited, so its no-sale-date superseded cases now meet
 ``DEPENDS_ON_SALE_DATE`` and are reported as failures.
 
+Answer-key revisions (Fix 38): the case files are never edited.
+``answer_key_overrides.jsonl`` lists ``{id, original, revised,
+reason}``; each is disclosed in ``ANSWER_KEY_CHANGES.md``. An
+override applies only while the case still expects ``original``.
+The report shows both scores (original key and revised key) and
+marks revised expectations as "expected (revised)".
+
 Run: ``python -m verify.eval.run`` (reads ``.env`` like the demo).
-Exit code is 1 when the safety metric is non-zero (either set),
-else 0.
+Exit code is 1 when the safety metric under the revised key is
+non-zero (either set), else 0.
 """
 import argparse
 import json
@@ -195,13 +202,66 @@ def _run_cases(cases, call_proposer, verifier):
     return results
 
 
+def _load_overrides(path):
+    if not path or not Path(path).exists():
+        return {}
+    return {rec["id"]: rec for rec in _load_cases(path)}
+
+
+def _apply_overrides(results, overrides):
+    """Score each result on the original and the revised key."""
+    stale = []
+    for r in results:
+        case = r["case"]
+        original = case.get("expected_decision")
+        r["passed_original"] = r["passed"]
+        r["wrong_verified_original"] = r["wrong_verified"]
+        r["expected_original"] = original
+        r["expected"] = original
+        r["revised"] = False
+        rec = overrides.get(case["id"])
+        if rec is None or original is None:
+            continue
+        if rec.get("original") != original:
+            stale.append(case["id"])
+            continue
+        revised = rec["revised"]
+        r["expected"] = revised
+        r["revised"] = True
+        r["revision_reason"] = rec.get("reason")
+        r["passed"] = r["actual"] == revised
+        r["wrong_verified"] = (r["actual"] == VERIFIED
+                               and revised != VERIFIED)
+    return stale
+
+
+def _expected_text(r):
+    case = r["case"]
+    if r.get("revised"):
+        return "%s → %s (revised)" % (r["expected_original"],
+                                      r["expected"])
+    return case.get("expected_decision") or "; ".join(
+        "%s=%s" % (e["kind"], e["verdict"])
+        for e in case.get("expected_claims") or [])
+
+
+def _score_lines(lines, results, label):
+    total = len(results)
+    for key, name in (("passed_original", "original key"),
+                      ("passed", "revised key")):
+        n = sum(1 for r in results if r[key])
+        lines.append("- %s, %s: **%d/%d = %.1f%%**"
+                     % (label, name, n, total, 100.0 * n / total))
+
+
 def _failure_lines(lines, failures):
     if not failures:
         lines.append("None.")
     for r in failures:
         case = r["case"]
-        expected = case.get("expected_decision") or case.get(
-            "expected_claims")
+        expected = (_expected_text(r) if r.get("revised")
+                    else case.get("expected_decision")
+                    or case.get("expected_claims"))
         lines.append("- **%s** (%s, %s): expected `%s`, got `%s`. %s"
                      % (case["id"], case["category"],
                         case.get("lang", ""), expected, r["actual"],
@@ -229,15 +289,16 @@ def _date_section(lines, results):
         lines.append("No sale-date cases were run.")
         lines.append("")
         return
-    passed = sum(1 for r in results if r["passed"])
-    wrong = sum(1 for r in results if r["wrong_verified"])
-    lines.append("- Accuracy: **%d/%d = %.1f%%**" % (
-        passed, len(results), 100.0 * passed / len(results)))
-    lines.append("- **Wrong answers shown as VERIFIED: %d of %d** "
-                 "(expected decision not VERIFIED). Must be 0."
-                 % (wrong, sum(1 for r in results
-                               if r["case"].get("expected_decision")
-                               != VERIFIED)))
+    _score_lines(lines, results, "Sale-date accuracy")
+    for key, exp_key, name in (
+            ("wrong_verified_original", "expected_original",
+             "original key"),
+            ("wrong_verified", "expected", "revised key")):
+        lines.append(
+            "- **Wrong answers shown as VERIFIED (%s): %d of %d** "
+            "(expected decision not VERIFIED). Must be 0."
+            % (name, sum(1 for r in results if r[key]),
+               sum(1 for r in results if r[exp_key] != VERIFIED)))
     lines.append("- Verifier tokens: %d total" % sum(
         r["tokens"]["total"] for r in results))
     lines.append("")
@@ -249,14 +310,25 @@ def _date_section(lines, results):
         lines.append("| %s | %s | %s | %s | %s | %s | %s | %.2f |" % (
             case["id"], case["category"], case.get("lang", ""),
             case.get("sale_date") or "(none / from text)",
-            case.get("expected_decision"), r["actual"],
+            _expected_text(r), r["actual"],
             "PASS" if r["passed"] else "**FAIL**", r["latency_s"]))
     lines.append("")
     failures = [r for r in results if not r["passed"]]
-    lines.append("### Sale-date failures (%d)" % len(failures))
+    lines.append("### Sale-date failures, revised key (%d)"
+                 % len(failures))
     lines.append("")
     _failure_lines(lines, failures)
     lines.append("")
+    _original_only_line(lines, results)
+
+
+def _original_only_line(lines, results):
+    only = [r["case"]["id"] for r in results
+            if r["passed"] and not r["passed_original"]]
+    if only:
+        lines.append("Failing only under the original key (see "
+                     "`ANSWER_KEY_CHANGES.md`): %s." % ", ".join(only))
+        lines.append("")
 
 
 def main(argv=None):
@@ -264,6 +336,8 @@ def main(argv=None):
     parser.add_argument("--cases", default=str(_HERE / "cases.jsonl"))
     parser.add_argument("--date-cases",
                         default=str(_HERE / "cases_dates.jsonl"))
+    parser.add_argument("--overrides",
+                        default=str(_HERE / "answer_key_overrides.jsonl"))
     parser.add_argument("--out", default=str(_HERE / "REPORT.md"))
     args = parser.parse_args(argv)
 
@@ -284,6 +358,9 @@ def main(argv=None):
     started = datetime.now(timezone.utc)
     results = _run_cases(cases, call_proposer, verifier)
     date_results = _run_cases(date_cases, call_proposer, verifier)
+    overrides = _load_overrides(args.overrides)
+    stale = (_apply_overrides(results, overrides)
+             + _apply_overrides(date_results, overrides))
 
     total = len(results)
     passed = sum(1 for r in results if r["passed"])
@@ -304,6 +381,10 @@ def main(argv=None):
              or r["case"]["category"] == "superseded"]
     trap_ids = ", ".join(r["case"]["id"] for r in traps)
     trap_wrong = sum(1 for r in traps if r["wrong_verified"])
+    trap_wrong_original = sum(
+        1 for r in traps if r["wrong_verified_original"])
+    wrong_verified_original = sum(
+        1 for r in results if r["wrong_verified_original"])
     calls = [r for r in results if r["case"]["kind"] == "call"]
     call_wrong = sum(1 for r in calls if r["wrong_verified"])
     by_category = {}
@@ -324,17 +405,27 @@ def main(argv=None):
     lines.append("")
     lines.append("## Summary")
     lines.append("")
-    lines.append("- Accuracy (exact match on expected decision): "
-                 "**%d/%d = %.1f%%**" % (passed, total,
-                                         100.0 * passed / total))
+    _score_lines(lines, results, "Accuracy (exact match on expected "
+                 "decision)")
+    lines.append("- Answer key: %d expectation(s) revised, disclosed in "
+                 "`ANSWER_KEY_CHANGES.md`; case files are not edited."
+                 % sum(1 for r in results + date_results
+                       if r.get("revised")))
+    if stale:
+        lines.append("- Overrides ignored (case expectation no longer "
+                     "matches the override's original): %s"
+                     % ", ".join(stale))
     lines.append("- **Wrong answers shown as VERIFIED: %d of %d** "
-                 "cases designed to tempt a wrong VERIFIED "
-                 "(superseded + adversarial: %s). Must be 0."
-                 % (trap_wrong, len(traps), trap_ids))
+                 "(revised key; original key: %d) cases designed to "
+                 "tempt a wrong VERIFIED (superseded + adversarial: "
+                 "%s). Must be 0."
+                 % (trap_wrong, len(traps), trap_wrong_original,
+                    trap_ids))
     lines.append("- Fake-call claims wrongly shown as SUPPORTED BY "
                  "RULES: %d of %d call cases." % (call_wrong, len(calls)))
     lines.append("- Any case wrongly VERIFIED / SUPPORTED (all %d "
-                 "cases): %d" % (total, wrong_verified))
+                 "cases): %d (revised key; original key: %d)"
+                 % (total, wrong_verified, wrong_verified_original))
     lines.append("- Refusals (REFUSED decisions): %d" % refusals)
     lines.append("- Call cases ending in CANNOT BE CONFIRMED claims: "
                  "%d" % cannot_confirm)
@@ -354,7 +445,7 @@ def main(argv=None):
     lines.append("")
     lines.append("## Accuracy by category")
     lines.append("")
-    lines.append("| Category | Passed | Total |")
+    lines.append("| Category | Passed (revised key) | Total |")
     lines.append("|---|---|---|")
     for cat in sorted(by_category):
         c = by_category[cat]
@@ -367,29 +458,18 @@ def main(argv=None):
     lines.append("|---|---|---|---|---|---|---|---|")
     for r in results:
         case = r["case"]
-        expected = case.get("expected_decision") or "; ".join(
-            "%s=%s" % (e["kind"], e["verdict"])
-            for e in case.get("expected_claims") or [])
         lines.append("| %s | %s | %s | %s | %s | %s | %.2f | %d |" % (
             case["id"], case["category"], case.get("lang", ""),
-            expected, r["actual"],
+            _expected_text(r), r["actual"],
             "PASS" if r["passed"] else "**FAIL**",
             r["latency_s"], r["tokens"]["total"]))
     lines.append("")
     failures = [r for r in results if not r["passed"]]
-    lines.append("## Failures (%d)" % len(failures))
+    lines.append("## Failures, revised key (%d)" % len(failures))
     lines.append("")
     _failure_lines(lines, failures)
     lines.append("")
-    depends = [r["case"]["id"] for r in failures
-               if r["actual"] == "DEPENDS_ON_SALE_DATE"]
-    if depends:
-        lines.append("Of these, %s returned `DEPENDS_ON_SALE_DATE` "
-                     "(Fix 36): `cases.jsonl` predates sale-date "
-                     "precedence, has no sale date for them and is "
-                     "not edited. They are counted as failures."
-                     % ", ".join(depends))
-        lines.append("")
+    _original_only_line(lines, results)
     _date_section(lines, date_results)
     langs = {}
     for r in results:
@@ -422,7 +502,9 @@ def main(argv=None):
     lines.append("")
     lines.append("- Cases were written before this run and were not "
                  "tuned afterwards; failures above are reported "
-                 "as observed.")
+                 "as observed. Answer-key revisions are listed with "
+                 "reasons in `ANSWER_KEY_CHANGES.md` and applied via "
+                 "`answer_key_overrides.jsonl`; both scores are shown.")
     lines.append("- `adversarial_claim` cases inject a fabricated or "
                  "misleading draft as the proposer output (a "
                  "simulated hallucinating proposer) and run the "
@@ -438,15 +520,24 @@ def main(argv=None):
     lines.append("")
 
     Path(args.out).write_text("\n".join(lines), encoding="utf-8")
-    print("\nAccuracy %d/%d; wrong-as-VERIFIED %d; est. cost $%.4f; "
+    print("\nRevised key: accuracy %d/%d; wrong-as-VERIFIED %d; "
+          "est. cost $%.4f; "
           "median latency %.2fs. Wrote %s"
           % (passed, total, wrong_verified, cost_usd,
              statistics.median(latencies), args.out))
     date_wrong = sum(1 for r in date_results if r["wrong_verified"])
+    print("Original key: accuracy %d/%d; wrong-as-VERIFIED %d"
+          % (sum(1 for r in results if r["passed_original"]), total,
+             wrong_verified_original))
     if date_results:
-        print("Sale-date cases: %d/%d; wrong-as-VERIFIED %d"
+        print("Sale-date cases (revised key): %d/%d; wrong-as-VERIFIED "
+              "%d; original key: %d/%d; wrong-as-VERIFIED %d"
               % (sum(1 for r in date_results if r["passed"]),
-                 len(date_results), date_wrong))
+                 len(date_results), date_wrong,
+                 sum(1 for r in date_results if r["passed_original"]),
+                 len(date_results),
+                 sum(1 for r in date_results
+                     if r["wrong_verified_original"])))
     return 1 if (wrong_verified or date_wrong) else 0
 
 
