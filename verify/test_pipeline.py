@@ -2143,6 +2143,32 @@ class TestFix26DisplayNormalisation(unittest.TestCase):
         self.assertEqual(trace["claims"][0]["quote"],
                          "requested tolodge it")
 
+    def test_final_answer_normalised_in_demo_and_web(self):
+        try:
+            from verify import web
+        except ImportError:
+            import web
+        demo = TestDemo()._demo()
+        final = ("Under the IRDAI Insurance Products Regulations "
+                 "2024product rules, the PED waiting period is at most "
+                 "36months (Source: irdai-insurance-products-regulations"
+                 "-2024.pdf)")
+        trace = {
+            "question": "q?", "draft": {"claims": []},
+            "decision": "VERIFIED", "claims": [], "final_answer": final,
+        }
+        text = demo.format_trace(trace)
+        page = web.render_answer_cards(trace)
+        for out in (text, page):
+            self.assertIn("2024 product rules", out)
+            self.assertIn("36 months", out)
+            self.assertIn("irdai-insurance-products-regulations-2024.pdf",
+                          out)
+            self.assertNotIn("2024product", out)
+            self.assertNotIn("36months", out)
+        # Display only: stored answer unchanged.
+        self.assertEqual(trace["final_answer"], final)
+
     def test_fix29_remaining_joins_call_and_demo(self):
         try:
             import verify.callcheck as cc

@@ -43,12 +43,14 @@ from urllib.parse import parse_qs, urlparse
 try:
     from verify.callcheck import (_SAFETY_LABEL, _verified_by_display,
                                   check_call)
-    from verify.demo import _call_models, _draft_claims, load_env
+    from verify.demo import (_call_models, _draft_claims, load_env,
+                             normalise_display_text)
     from verify.pipeline import answer
     from verify.voice import transcribe
 except ImportError:  # run as top-level module (cd verify)
     from callcheck import _SAFETY_LABEL, _verified_by_display, check_call
-    from demo import _call_models, _draft_claims, load_env
+    from demo import (_call_models, _draft_claims, load_env,
+                      normalise_display_text)
     from pipeline import answer
     from voice import transcribe
 
@@ -250,7 +252,8 @@ def render_answer_cards(trace):
     if trace.get("refusal_reason"):
         body += "<p>Refusal reason: %s</p>" % _esc(trace["refusal_reason"])
     if trace.get("final_answer"):
-        body += '<p class="final">%s</p>' % _esc(trace["final_answer"])
+        body += '<p class="final">%s</p>' % _esc(
+            normalise_display_text(trace["final_answer"]))
     cards.append(_card("Stage 5 — Final decision", body))
     return "\n".join(cards)
 

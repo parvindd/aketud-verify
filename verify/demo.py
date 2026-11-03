@@ -324,7 +324,8 @@ def format_trace(trace, *, color=False, raw=False):
     if trace.get("refusal_reason"):
         lines.append("Refusal reason: %s" % trace["refusal_reason"])
     if trace.get("final_answer"):
-        lines.append("Final answer: %s" % trace["final_answer"])
+        lines.append("Final answer: %s"
+                     % normalise_display_text(trace["final_answer"]))
     return "\n".join(lines)
 
 
