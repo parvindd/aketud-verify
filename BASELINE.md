@@ -53,7 +53,7 @@ to `health-corpus/raw/` before running the tests:
 
 - `irdai-insurance-products-regulations-2024.pdf` — IRDAI (Insurance Products) Regulations, 2024
 - `master-circular-health-2024.pdf` — IRDAI Master Circular on Health Insurance Business, 29 May 2024
-- `arogya-sanjeevani-specimen.pdf` — Arogya Sanjeevani prospectus (IRDAI standard product, HDFC ERGO specimen)
+- `arogya-sanjeevani-specimen.pdf` — Arogya Sanjeevani prospectus (IRDAI standard product, specimen)
 
 ## Test result at baseline
 

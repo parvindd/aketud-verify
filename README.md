@@ -60,7 +60,7 @@ Code was written with **Muse Code**.
 
 ## Sources
 
-Official documents only, listed in `health-corpus/SOURCES.csv` and `life-corpus/SOURCES.csv`. Rule text used for call checks is quoted, with paragraph references, in [life-corpus/CASE_D_RULES.md](life-corpus/CASE_D_RULES.md). The PDFs are third-party documents and are **not** redistributed here; download them from the listed URLs into `health-corpus/raw/` and `life-corpus/raw/`.
+Official documents only, listed in `health-corpus/SOURCES.csv` and `life-corpus/SOURCES.csv`. Rule text used for call checks is quoted, with paragraph references, in [life-corpus/CASE_D_RULES.md](life-corpus/CASE_D_RULES.md). The PDFs are third-party documents and are **not** redistributed here; download them from the listed URLs into `health-corpus/raw/` and `life-corpus/raw/`. Arogya Sanjeevani and Corona Kavach are standard IRDAI products; use any insurer's published policy wording for these rows.
 
 ## Run it
 

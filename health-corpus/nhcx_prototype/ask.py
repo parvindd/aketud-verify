@@ -43,7 +43,7 @@ _AROGYA = "arogya-sanjeevani-specimen.pdf"
 
 _PRODUCTS_TITLE = "IRDAI (Insurance Products) Regulations, 2024"
 _MASTER_TITLE = "Master Circular on Health Insurance Business, 29 May 2024"
-_AROGYA_TITLE = "Arogya Sanjeevani prospectus (HDFC ERGO specimen)"
+_AROGYA_TITLE = "Arogya Sanjeevani prospectus (specimen)"
 
 _PED_QUOTE = (
     "Waiting period for pre-existing diseases disclosed by the persons "
@@ -159,7 +159,7 @@ _FROZEN = (
         ),
         keywords=("30 days", "first thirty days", "waiting period for illness"),
         answer=(
-            "In the Arogya Sanjeevani specimen (HDFC ERGO), expenses "
+            "In the Arogya Sanjeevani specimen, expenses "
             "for treatment of any illness within 30 days from the "
             "first policy commencement date are excluded. The "
             "exclusion does not apply to claims arising due to an "
@@ -168,7 +168,7 @@ _FROZEN = (
         source_title=_AROGYA_TITLE,
         source_file=_AROGYA,
         citation=(
-            "Arogya Sanjeevani prospectus (HDFC ERGO specimen), "
+            "Arogya Sanjeevani prospectus (specimen), "
             "§3.2, Code-Excl03 (p. 2)"
         ),
         quote=(
@@ -208,7 +208,7 @@ _FROZEN = (
         source_title=_AROGYA_TITLE,
         source_file=_AROGYA,
         citation=(
-            "Arogya Sanjeevani prospectus (HDFC ERGO specimen), "
+            "Arogya Sanjeevani prospectus (specimen), "
             "§4.5, Code-Excl08 (pp. 2–3)"
         ),
         quote=(

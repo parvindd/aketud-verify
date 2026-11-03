@@ -392,7 +392,7 @@ _TITLES = {
         "Schedule III, Regulation 7"
     ),
     "arogya-sanjeevani-specimen.pdf": (
-        "Arogya Sanjeevani prospectus (HDFC ERGO specimen)"
+        "Arogya Sanjeevani prospectus (specimen)"
     ),
     "master-circular-health-2024.pdf": (
         "Master Circular on Health Insurance Business, 29 May 2024"

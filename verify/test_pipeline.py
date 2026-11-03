@@ -784,7 +784,7 @@ class TestPipelineScenarios(unittest.TestCase):
             msg,
             "Current rule: maximum 36 months (IRDAI (Insurance "
             "Products) Regulations, 2024, Schedule III, Regulation "
-            "7). Arogya Sanjeevani prospectus (HDFC ERGO specimen) "
+            "7). Arogya Sanjeevani prospectus (specimen) "
             "still says 48 months, but the 2024 regulation overrides "
             "it.\n" + PED_QUOTE)
         self.assertNotIn(AROGYA_48_QUOTE, msg)

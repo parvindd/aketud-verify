@@ -39,7 +39,8 @@ key**. Revised rows read `ORIGINAL → REVISED (revised)`.
 
 ## Filename rename
 
-- `arogya-sanjeevani-hdfc-ergo.pdf` was renamed to
-  `arogya-sanjeevani-specimen.pdf` in the code, the case files
+- The Arogya Sanjeevani specimen PDF was renamed to
+  `arogya-sanjeevani-specimen.pdf` (the previous filename contained an
+  insurer name) in the code, the case files
   (A18, A20, A22, D08, D09) and the docs: filename rename only, no
   expectation changed.

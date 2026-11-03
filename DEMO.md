@@ -111,7 +111,7 @@ What the tests demonstrate:
   The Hinglish frozen wording returns this answer in the demo.
 - Initial waiting period (Arogya Sanjeevani specimen): 30 days for
   illness, not applicable to accidents. Cited to the Arogya Sanjeevani
-  prospectus (HDFC ERGO specimen), Code-Excl03.
+  prospectus (specimen), Code-Excl03.
 - Cosmetic surgery (Arogya Sanjeevani specimen): not covered, with
   the full "unless" qualification kept (reconstruction following an
   Accident, Burn(s) or Cancer, or medically necessary treatment to
