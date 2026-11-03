@@ -2,7 +2,15 @@
 
 **Meta Global AI Developer Hackathon 2026 · Startup track · Build for Your World**
 
-India has over a million insurance intermediaries — agents, POSPs, small brokers — answering policyholders in Hindi, Hinglish and English, often from memory or an outdated brochure. Policyholders meanwhile get calls from fake "agents" and fake "IRDAI officers" demanding revival fees through payment links.
+**Demo video (3 min):** https://youtu.be/EZFgfWPLXxQ
+
+In India, agents, POSPs and small brokers answer policyholders' questions in Hindi, Hinglish and English. Policyholders meanwhile get calls from fake "agents" and fake "IRDAI officers" demanding revival fees through payment links.
+
+## Why
+
+- India had **30.34 lakh life insurance agents** in January 2025 (Life Insurance Council data) — [Cafemutual](https://cafemutual.com/news/insurance/34334-life-insurance-industry-adds-241-lakh-agents-to-reach-30-lakh-foot-soldiers).
+- **Unfair business practices made up 22.14% of life insurance complaints** in FY2024-25 (IRDAI Annual Report) — [Outlook Money](https://www.outlookmoney.com/insurance/insurance-claims-mis-selling-account-for-most-insurance-complaints-in-fy25-reveals-irdai-annual-report).
+- IRDAI has issued a **public notice on spurious phone calls and fictitious offers** — [policyholder.gov.in](https://policyholder.gov.in/w/spurious-phone-calls).
 
 Aketud Verify answers insurance questions and checks suspicious calls **only from official documents**. Every claim is quoted, the quote is checked against the source PDF, an independent model verifies it, and a newer regulation overrides an older document. Anything not proven is refused. **Fail closed.**
 
@@ -73,6 +81,7 @@ python -m unittest discover -s verify -t .
 - Not legal or financial advice, and not a coverage decision. The insurer decides.
 - The IRDAI spurious-call notice is quoted from a 2019 master circular; its status after IRDAI's 2024 consolidation has not been confirmed and it is shown with its date.
 - Speech recognition output varies between runs.
+- Known gap: on a Hindi question about IVF treatment abroad, the system refused although the specimen explicitly excludes both IVF and treatment outside India. Refusing is safe but missed a citable answer.
 
 ## Licence
 
