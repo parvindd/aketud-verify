@@ -85,4 +85,4 @@ python -m unittest discover -s verify -t .
 
 ## Licence
 
-MIT for the code in this repository. Source documents belong to their issuers.
+License: Apache-2.0 — see [LICENSE](LICENSE). Copyright 2026 MapleSage Pvt Ltd. Files in `health-corpus/nhcx_prototype/` keep their own MIT headers. Source documents belong to their issuers.
