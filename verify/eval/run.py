@@ -408,7 +408,8 @@ def main(argv=None):
     _score_lines(lines, results, "Accuracy (exact match on expected "
                  "decision)")
     lines.append("- Answer key: %d expectation(s) revised, disclosed in "
-                 "`ANSWER_KEY_CHANGES.md`; case files are not edited."
+                 "`ANSWER_KEY_CHANGES.md`; expectations in the case "
+                 "files are not edited."
                  % sum(1 for r in results + date_results
                        if r.get("revised")))
     if stale:
