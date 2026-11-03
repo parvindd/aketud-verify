@@ -36,3 +36,10 @@ key**. Revised rows read `ORIGINAL → REVISED (revised)`.
 - **D11** (English) and **D12** (Hinglish) were added for Fix 37. In
   both, the policy was bought in 2021 and the claim cites Reg 7
   directly. Expected: APPLIES_TO_OLDER_CONTRACT.
+
+## Filename rename
+
+- `arogya-sanjeevani-hdfc-ergo.pdf` was renamed to
+  `arogya-sanjeevani-specimen.pdf` in the code, the case files
+  (A18, A20, A22, D08, D09) and the docs: filename rename only, no
+  expectation changed.

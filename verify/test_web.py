@@ -554,7 +554,7 @@ class TestGoverningCardRendering(unittest.TestCase):
         except ImportError:
             from pipeline import answer
         draft = {"claims": [{"claim": "PED waiting period is 48 months",
-                             "source_file": "arogya-sanjeevani-hdfc-ergo.pdf",
+                             "source_file": "arogya-sanjeevani-specimen.pdf",
                              "quote": self.AROGYA_48_QUOTE}]}
 
         def backend(claim, quote, source_text):

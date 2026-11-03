@@ -550,12 +550,12 @@ _PROPOSER_PROMPT = (
 
 _SOURCES_HINT = (
     "irdai-insurance-products-regulations-2024.pdf, "
-    "master-circular-health-2024.pdf, arogya-sanjeevani-hdfc-ergo.pdf"
+    "master-circular-health-2024.pdf, arogya-sanjeevani-specimen.pdf"
 )
 
 _PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
 _MASTER = "master-circular-health-2024.pdf"
-_AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
+_AROGYA = "arogya-sanjeevani-specimen.pdf"
 
 # Candidate passages copied from the quotes ask.py already uses,
 # plus authority entries (merged in retrieve()). Each entry:

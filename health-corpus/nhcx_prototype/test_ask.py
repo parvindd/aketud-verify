@@ -129,11 +129,11 @@ class TestCitationIntegrity(unittest.TestCase):
             ("Moratorium Period, i.e. 60 months of continuous coverage",),
         ),
         "initial_waiting_period": (
-            "arogya-sanjeevani-hdfc-ergo.pdf",
+            "arogya-sanjeevani-specimen.pdf",
             ("within 30 days from the first policy commencement date",),
         ),
         "cosmetic_exclusion": (
-            "arogya-sanjeevani-hdfc-ergo.pdf",
+            "arogya-sanjeevani-specimen.pdf",
             ("unless for reconstruction following an Accident, Burn(s) or",
              "direct and immediate health risk to the insured"),
         ),

@@ -39,7 +39,7 @@ _RAW_DIR = Path(__file__).resolve().parents[1] / "raw"
 
 _PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
 _MASTER = "master-circular-health-2024.pdf"
-_AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
+_AROGYA = "arogya-sanjeevani-specimen.pdf"
 
 _PRODUCTS_TITLE = "IRDAI (Insurance Products) Regulations, 2024"
 _MASTER_TITLE = "Master Circular on Health Insurance Business, 29 May 2024"

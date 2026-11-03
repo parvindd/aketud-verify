@@ -106,7 +106,7 @@ REGISTRY = [
         "published": "2024-03-22",
         "signed": "2024-03-20",
         "gazette": "Gazette No. 206",
-        "supersedes": ["arogya-sanjeevani-hdfc-ergo.pdf"],
+        "supersedes": ["arogya-sanjeevani-specimen.pdf"],
         "short_ref": "Reg 7",
         "cap_label": {"en": "The 36-month cap",
                       "hi": "36 महीने की अधिकतम सीमा",
@@ -391,7 +391,7 @@ _TITLES = {
         "IRDAI (Insurance Products) Regulations, 2024, "
         "Schedule III, Regulation 7"
     ),
-    "arogya-sanjeevani-hdfc-ergo.pdf": (
+    "arogya-sanjeevani-specimen.pdf": (
         "Arogya Sanjeevani prospectus (HDFC ERGO specimen)"
     ),
     "master-circular-health-2024.pdf": (
@@ -409,7 +409,7 @@ _TITLES = {
 
 # Short names for a cited (superseded) source in final answers.
 _SHORT_NAMES = {
-    "arogya-sanjeevani-hdfc-ergo.pdf": {
+    "arogya-sanjeevani-specimen.pdf": {
         "en": "the specimen", "hi": "स्पेसिमेन",
         "hinglish": "specimen"},
 }

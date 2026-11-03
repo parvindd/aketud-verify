@@ -51,7 +51,7 @@ except ImportError:  # cd verify && python3 -m unittest test_pipeline
     from verifier import _PROMPT, _context_window
 
 PRODUCTS = "irdai-insurance-products-regulations-2024.pdf"
-AROGYA = "arogya-sanjeevani-hdfc-ergo.pdf"
+AROGYA = "arogya-sanjeevani-specimen.pdf"
 
 PED_QUOTE = (
     "Waiting period for pre-existing diseases disclosed by the persons "
